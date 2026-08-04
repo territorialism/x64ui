@@ -7,10 +7,11 @@
  - Responsive viewport clamping
  - Fast CanvasGroup fade-in diffusion intro
  - Fixed: vararg closure error in X64UI:ExecuteCommand
+ - Fixed: Viewport clamping snapping UI up during drag
 ]]
 
 local X64UI = {
-  Version = "4.0.1-desktop",
+  Version = "4.0.2-desktop",
   MenuKeybind = Enum.KeyCode.RightShift,
   CurrentWindow = nil,
   NotifyGui = nil,
@@ -388,10 +389,20 @@ local function getParent()
   return player:WaitForChild("PlayerGui")
 end
 
+-- FIXED: Added GUI inset to viewport size calculation
 local function getViewportSize()
   local cam = Workspace.CurrentCamera
-  if cam then return cam.ViewportSize end
-  return Vector2.new(1280, 720)
+  local viewport = cam and cam.ViewportSize or Vector2.new(1280, 720)
+  
+  local ok, inset = pcall(function()
+    return GuiService:GetGuiInset()
+  end)
+  
+  if ok and inset then
+    return viewport + inset
+  end
+  
+  return viewport
 end
 
 local function pointInGui(gui, point)
