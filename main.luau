@@ -1,13 +1,12 @@
---[[
-  X64UI Advanced Desktop Rework
-  - Desktop only, no mobile/touch support
-  - Maid cleanup, Signal bus, observable state, undo/redo history
-  - Command palette with Ctrl+P
-  - Validated configuration
-  - Window focus management
-  - Responsive viewport clamping
-  - Fast CanvasGroup fade-in diffusion intro
-  - Fixed: vararg closure error in X64UI:ExecuteCommand
+--[[ X64UI Advanced Desktop Rework
+ - Desktop only, no mobile/touch support
+ - Maid cleanup, Signal bus, observable state, undo/redo history
+ - Command palette with Ctrl+P
+ - Validated configuration
+ - Window focus management
+ - Responsive viewport clamping
+ - Fast CanvasGroup fade-in diffusion intro
+ - Fixed: vararg closure error in X64UI:ExecuteCommand
 ]]
 
 local X64UI = {
@@ -44,6 +43,8 @@ local X64UI = {
     Scroll = Color3.fromRGB(74, 74, 80),
   },
 }
+
+local unpack = unpack or table.unpack
 
 local Services = setmetatable({}, {
   __index = function(self, key)
@@ -148,7 +149,7 @@ function Signal:Fire(...)
     if binding.Connected then
       task.spawn(function()
         local ok, err = xpcall(function()
-          binding.Callback(table.unpack(arguments, 1, arguments.n))
+          binding.Callback(unpack(arguments, 1, arguments.n))
         end, traceback)
 
         if not ok then
@@ -380,7 +381,11 @@ local function getParent()
     return core
   end
 
-  return Players.LocalPlayer:WaitForChild("PlayerGui")
+  local player = Players.LocalPlayer
+  if not player then
+    repeat task.wait() player = Players.LocalPlayer until player
+  end
+  return player:WaitForChild("PlayerGui")
 end
 
 local function getViewportSize()
@@ -785,7 +790,7 @@ function Window:PlayIntro()
       BackgroundTransparency = 0,
       GroupTransparency = 0,
       BorderSizePixel = 0,
-      ZIndex = 999999,
+      ZIndex = 32767,
     })
 
     if self.Maid then
@@ -2484,7 +2489,7 @@ function X64UI:ExecuteCommand(name, ...)
   local args = table.pack(...)
 
   local ok, result = xpcall(function()
-    return command.Callback(table.unpack(args, 1, args.n))
+    return command.Callback(unpack(args, 1, args.n))
   end, traceback)
 
   if not ok then
@@ -3079,7 +3084,7 @@ function X64UI:Notify(opts)
         Name = "X64Notify",
         ResetOnSpawn = false,
         IgnoreGuiInset = true,
-        DisplayOrder = 999999,
+        DisplayOrder = 32767,
         Parent = getParent(),
       })
     end
