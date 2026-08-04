@@ -5,13 +5,13 @@ x64dbg ui library
 ## Loadstring
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
 ```
 
 ## Example
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
 
 local X64UI = getgenv and getgenv().X64UI or shared.X64UI
 
