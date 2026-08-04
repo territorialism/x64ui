@@ -3,8 +3,7 @@
   Run the loader first, then this.
 ]]
 
--- The loader already fetched and stored X64UI globally.
-local X64UI = getgenv and getgenv().X64UI or shared.X64UI
+local X64UI = (getgenv and getgenv().X64UI) or (shared and shared.X64UI)
 
 if not X64UI then
   warn("[X64UI] Library not loaded. Run the loader first.")
