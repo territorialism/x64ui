@@ -1,17 +1,23 @@
---[[ X64UI Advanced Desktop Rework
- - Desktop only, no mobile/touch support
- - Maid cleanup, Signal bus, observable state, undo/redo history
- - Command palette with Ctrl+P
- - Validated configuration
- - Window focus management
- - Responsive viewport clamping
- - Fast CanvasGroup fade-in diffusion intro
- - Fixed: vararg closure error in X64UI:ExecuteCommand
- - Fixed: Viewport clamping snapping UI up during drag
+--[[
+  X64UI Advanced Desktop Rework
+  Desktop-only, no mobile/touch support
+  Maid cleanup, Signal bus, observable state, undo/redo history
+  Command palette (Ctrl+P), config save/load, window focus management
+  Responsive viewport clamping, fast CanvasGroup fade-in intro
+
+  Changelog (4.0.4):
+  - Fixed unpack polyfill for older executors
+  - Fixed getParent() crash when LocalPlayer hasn't loaded yet
+  - Fixed viewport clamping snapping UI upward during drag (GuiInset offset)
+  - Fixed drag snapping caused by InputObject.Position vs GetMouseLocation mismatch
+  - Fixed CanvasGroup resolution blur when maximized (1024x1024 internal texture limit)
+  - Fixed corner resize exceeding viewport bounds (hardcoded 1900x1300 limits removed)
+  - Fixed ZIndex = 999999 rendering glitches (capped at 32767)
+  - Removed built-in demo from library file (moved to example.luau)
 ]]
 
 local X64UI = {
-  Version = "4.0.2-desktop",
+  Version = "4.0.4-desktop",
   MenuKeybind = Enum.KeyCode.RightShift,
   CurrentWindow = nil,
   NotifyGui = nil,
@@ -23,14 +29,12 @@ local X64UI = {
   Theme = {
     Font = Enum.Font.Code,
     TextSize = 13,
-
     Background = Color3.fromRGB(19, 19, 21),
     TitleBar = Color3.fromRGB(31, 31, 34),
     Menu = Color3.fromRGB(26, 26, 29),
     Panel = Color3.fromRGB(29, 29, 32),
     PanelAlt = Color3.fromRGB(38, 38, 42),
     Border = Color3.fromRGB(62, 62, 70),
-
     Text = Color3.fromRGB(222, 222, 227),
     Dim = Color3.fromRGB(128, 128, 136),
     Accent = Color3.fromRGB(0, 122, 204),
@@ -38,7 +42,6 @@ local X64UI = {
     Warning = Color3.fromRGB(220, 220, 170),
     Bad = Color3.fromRGB(244, 71, 71),
     Selection = Color3.fromRGB(51, 153, 255),
-
     Button = Color3.fromRGB(44, 44, 48),
     ButtonHover = Color3.fromRGB(61, 61, 66),
     Scroll = Color3.fromRGB(74, 74, 80),
@@ -63,7 +66,6 @@ local GuiService = Services.GuiService
 local HttpService = Services.HttpService
 local Workspace = Services.Workspace
 
--- Desktop only.
 if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
   warn("[X64UI] Mobile is not supported. This build is desktop-only.")
   return
@@ -389,20 +391,23 @@ local function getParent()
   return player:WaitForChild("PlayerGui")
 end
 
--- FIXED: Added GUI inset to viewport size calculation
 local function getViewportSize()
   local cam = Workspace.CurrentCamera
   local viewport = cam and cam.ViewportSize or Vector2.new(1280, 720)
-  
+
   local ok, inset = pcall(function()
     return GuiService:GetGuiInset()
   end)
-  
+
   if ok and inset then
     return viewport + inset
   end
-  
+
   return viewport
+end
+
+local function getMousePos()
+  return UserInputService:GetMouseLocation()
 end
 
 local function pointInGui(gui, point)
@@ -418,18 +423,11 @@ local function pointInGui(gui, point)
 end
 
 local function mouseOverGui(gui)
-  local ok, mouse = pcall(function()
-    return UserInputService:GetMouseLocation()
-  end)
-
+  local ok, mouse = pcall(getMousePos)
   if not ok or not mouse then return false end
 
   local inset = GuiService:GetGuiInset()
   return pointInGui(gui, mouse) or pointInGui(gui, mouse - inset)
-end
-
-local function mousePosition2D(input)
-  return Vector2.new(input.Position.X, input.Position.Y)
 end
 
 local function bindCanvas(window, scroll, layout)
@@ -475,6 +473,19 @@ local function isControlValueValid(control, value)
   return false
 end
 
+local function getWindowResizeLimits()
+  local viewport = getViewportSize()
+  local margin = 8
+
+  local maxW = math.max(1, viewport.X - margin * 2)
+  local maxH = math.max(1, viewport.Y - margin * 2)
+
+  local minW = math.min(760, maxW)
+  local minH = math.min(420, maxH)
+
+  return viewport, margin, Vector2.new(minW, minH), Vector2.new(maxW, maxH)
+end
+
 -- ==================== CLASSES ====================
 
 local Window = {}
@@ -493,7 +504,6 @@ function Window:Track(taskObject)
     if self.Maid then
       self.Maid:CleanupTask(taskObject)
     end
-
     return taskObject
   end
 
@@ -602,20 +612,31 @@ function Window:UpdateLayout()
 end
 
 function Window:ClampToViewport()
-  if self.Destroyed or self.Maximized then return end
+  if self.Destroyed or self.Maximized or self.Minimized then return end
   if not self.Main or not self.Main.Parent then return end
 
-  local viewport = getViewportSize()
-  local size = self.Main.AbsoluteSize
-  local position = self.Main.AbsolutePosition
+  local viewport, margin, minSize, maxSize = getWindowResizeLimits()
 
-  local margin = 8
+  local currentSize = Vector2.new(self.Main.AbsoluteSize.X, self.Main.AbsoluteSize.Y)
+  local size = Vector2.new(
+    math.clamp(currentSize.X, minSize.X, maxSize.X),
+    math.clamp(currentSize.Y, minSize.Y, maxSize.Y)
+  )
+
+  if size.X ~= currentSize.X or size.Y ~= currentSize.Y then
+    self.Main.Size = UDim2.fromOffset(size.X, size.Y)
+    self:UpdateLayout()
+  end
+
+  local posX = self.Main.Position.X.Offset
+  local posY = self.Main.Position.Y.Offset
+
   local maxX = math.max(margin, viewport.X - size.X - margin)
   local maxY = math.max(margin, viewport.Y - size.Y - margin)
 
   self.Main.Position = UDim2.fromOffset(
-    math.clamp(position.X, margin, maxX),
-    math.clamp(position.Y, margin, maxY)
+    math.clamp(posX, margin, maxX),
+    math.clamp(posY, margin, maxY)
   )
 end
 
@@ -712,18 +733,6 @@ function Window:Show()
     if self.Events and self.Events.VisibilityChanged then
       self.Events.VisibilityChanged:Fire(true)
     end
-
-    if self.IntroPlayed then
-      pcall(function()
-        self.Main.GroupTransparency = 1
-
-        TweenService:Create(
-          self.Main,
-          TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-          { GroupTransparency = 0 }
-        ):Play()
-      end)
-    end
   end
 end
 
@@ -792,8 +801,6 @@ function Window:PlayIntro()
   self.IntroPlayed = true
 
   pcall(function()
-    self.Main.GroupTransparency = 1
-
     local wash = create("CanvasGroup", {
       Parent = self.Gui,
       Size = UDim2.fromScale(1, 1),
@@ -819,12 +826,6 @@ function Window:PlayIntro()
         NumberSequenceKeypoint.new(1, 1),
       }),
     })
-
-    TweenService:Create(
-      self.Main,
-      TweenInfo.new(0.36, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-      { GroupTransparency = 0 }
-    ):Play()
 
     TweenService:Create(
       gradient,
@@ -867,7 +868,7 @@ function Window:MakeDraggable(frame, handle)
     if not canDrag() then return end
 
     dragging = true
-    startMouse = mousePosition2D(input)
+    startMouse = getMousePos()
     startPos = frame.Position
     self:Focus()
   end
@@ -892,7 +893,7 @@ function Window:MakeDraggable(frame, handle)
     if not dragging then return end
 
     if input.UserInputType == Enum.UserInputType.MouseMovement then
-      local current = mousePosition2D(input)
+      local current = getMousePos()
       local delta = current - startMouse
 
       frame.Position = UDim2.new(
@@ -930,12 +931,29 @@ function Window:MakeResizable(frame, grip)
     return true
   end
 
+  local function normalizeSize()
+    local _, _, minSize, maxSize = getWindowResizeLimits()
+
+    local current = Vector2.new(frame.AbsoluteSize.X, frame.AbsoluteSize.Y)
+    local fixed = Vector2.new(
+      math.clamp(current.X, minSize.X, maxSize.X),
+      math.clamp(current.Y, minSize.Y, maxSize.Y)
+    )
+
+    if fixed.X ~= current.X or fixed.Y ~= current.Y then
+      frame.Size = UDim2.fromOffset(fixed.X, fixed.Y)
+      self:UpdateLayout()
+    end
+
+    return fixed
+  end
+
   local function beginResize(input)
     if not canResize() then return end
 
     resizing = true
-    startMouse = mousePosition2D(input)
-    startSize = frame.AbsoluteSize
+    startMouse = getMousePos()
+    startSize = normalizeSize()
     self:Focus()
   end
 
@@ -959,14 +977,15 @@ function Window:MakeResizable(frame, grip)
     if not resizing then return end
 
     if input.UserInputType == Enum.UserInputType.MouseMovement then
-      local current = mousePosition2D(input)
-      local dx = current.X - startMouse.X
-      local dy = current.Y - startMouse.Y
+      local _, _, minSize, maxSize = getWindowResizeLimits()
+      local current = getMousePos()
 
-      frame.Size = UDim2.fromOffset(
-        math.clamp(startSize.X + dx, 760, 1900),
-        math.clamp(startSize.Y + dy, 420, 1300)
+      local nextSize = Vector2.new(
+        math.clamp(startSize.X + (current.X - startMouse.X), minSize.X, maxSize.X),
+        math.clamp(startSize.Y + (current.Y - startMouse.Y), minSize.Y, maxSize.Y)
       )
+
+      frame.Size = UDim2.fromOffset(nextSize.X, nextSize.Y)
 
       self:UpdateLayout()
       self:ClampToViewport()
@@ -1354,7 +1373,7 @@ function Window:CreateCommandPalette()
 
           local text = command.Name
           if command.Description ~= "" then
-            text = text .. "  —  " .. command.Description
+            text = text .. " — " .. command.Description
           end
 
           local item = create("TextButton", {
@@ -2511,130 +2530,6 @@ function X64UI:ExecuteCommand(name, ...)
   return true, result
 end
 
-function X64UI:RegisterDefaultCommands()
-  self:RegisterCommand("Toggle Window", {
-    Description = "Show or hide the interface",
-    Keywords = { "menu", "visibility", "window" },
-    Callback = function()
-      if X64UI.CurrentWindow then
-        X64UI.CurrentWindow:Toggle()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Maximize Window", {
-    Description = "Toggle maximized mode",
-    Keywords = { "fullscreen", "resize" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:SetMaximized(not window.Maximized)
-      end
-    end,
-  })
-
-  self:RegisterCommand("Minimize Window", {
-    Description = "Toggle minimized mode",
-    Keywords = { "collapse", "titlebar" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:SetMinimized(not window.Minimized)
-      end
-    end,
-  })
-
-  self:RegisterCommand("Undo Last Change", {
-    Description = "Undo the previous control change",
-    Keywords = { "history", "reverse" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window.History:UndoLast()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Redo Last Change", {
-    Description = "Redo the last undone change",
-    Keywords = { "history", "repeat" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window.History:RedoLast()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Toggle Console", {
-    Description = "Show or hide the log console",
-    Keywords = { "log", "output" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:ToggleConsole()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Toggle Status Bar", {
-    Description = "Show or hide the status bar",
-    Keywords = { "footer", "fps" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:ToggleStatusBar()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Clear Log", {
-    Description = "Clear all console messages",
-    Keywords = { "console", "log", "clear" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:ClearLog()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Save Config", {
-    Description = "Save current control values",
-    Keywords = { "config", "save", "writefile" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:SaveConfig()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Load Config", {
-    Description = "Load saved control values",
-    Keywords = { "config", "load", "readfile" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:LoadConfig()
-      end
-    end,
-  })
-
-  self:RegisterCommand("Command Palette", {
-    Description = "Open or close the command palette",
-    Keywords = { "search", "commands", "ctrl p" },
-    Callback = function()
-      local window = X64UI.CurrentWindow
-      if window then
-        window:ToggleCommandPalette()
-      end
-    end,
-  })
-end
-
-X64UI:RegisterDefaultCommands()
-
 -- ==================== WINDOW CREATION ====================
 
 function X64UI:CreateWindow(options)
@@ -2705,7 +2600,9 @@ function X64UI:CreateWindow(options)
     Parent = getParent(),
   })
 
-  win.Main = create("CanvasGroup", {
+  -- Frame instead of CanvasGroup to prevent resolution blur when maximized.
+  -- CanvasGroup has a 1024x1024 internal texture limit in the Roblox engine.
+  win.Main = create("Frame", {
     Parent = win.Gui,
     Name = "MainWindow",
     AnchorPoint = Vector2.zero,
@@ -2717,7 +2614,6 @@ function X64UI:CreateWindow(options)
     BackgroundColor3 = Theme.Background,
     BorderColor3 = Theme.Border,
     BorderSizePixel = 1,
-    GroupTransparency = 1,
   })
 
   win.TitleBar = create("Frame", {
@@ -3187,132 +3083,7 @@ function X64UI:Notify(opts)
   end)
 end
 
--- ==================== DEMO ====================
-
-do
-  local window = X64UI:CreateWindow({
-    Title = "Advanced X64UI",
-    Width = 1020,
-    Height = 660,
-  })
-
-  local main = window:AddTab("Main")
-  local left = main:AddLeftGroupbox("Controls")
-  local right = main:AddRightGroupbox("System")
-
-  left:AddLabel("Desktop-only build.", true)
-  left:AddLabel("Ctrl+P opens the command palette.", true)
-  left:AddLabel("Toggle, slider, dropdown, input, and keybind changes support undo/redo.", true)
-
-  local enabled = left:AddToggle("Enabled", {
-    Text = "Enable system",
-    Default = true,
-    Callback = function(value)
-      window:Log("Enabled -> " .. tostring(value))
-    end,
-  })
-
-  left:AddSlider("Speed", {
-    Text = "Speed",
-    Min = 0,
-    Max = 100,
-    Default = 50,
-    Rounding = 0,
-    Callback = function(value)
-      window:SetStatus("Speed: " .. tostring(value))
-    end,
-  })
-
-  left:AddDropdown("Mode", {
-    Text = "Mode",
-    Values = { "Safe", "Balanced", "Aggressive", "Custom" },
-    Default = "Balanced",
-    Callback = function(value)
-      window:Log("Mode -> " .. tostring(value))
-    end,
-  })
-
-  left:AddInput("Note", {
-    Text = "Note",
-    Placeholder = "Type something",
-    Callback = function(value)
-      window:Log("Note -> " .. tostring(value))
-    end,
-  })
-
-  left:AddKeyPicker("Hotkey", {
-    Text = "Example Hotkey",
-    Default = "None",
-    Callback = function(value)
-      window:Log("Hotkey -> " .. tostring(value))
-    end,
-  })
-
-  right:AddButton({
-    Text = "Notify",
-    Callback = function()
-      X64UI:Notify({
-        Title = "X64UI",
-        Description = "Advanced architecture loaded.",
-        Time = 3,
-      })
-    end,
-  })
-
-  right:AddButton({
-    Text = "Save Config",
-    Callback = function()
-      window:SaveConfig()
-    end,
-  })
-
-  right:AddButton({
-    Text = "Load Config",
-    Callback = function()
-      window:LoadConfig()
-    end,
-  })
-
-  right:AddButton({
-    Text = "Undo",
-    Callback = function()
-      window.History:UndoLast()
-    end,
-  })
-
-  right:AddButton({
-    Text = "Redo",
-    Callback = function()
-      window.History:RedoLast()
-    end,
-  })
-
-  right:AddButton({
-    Text = "Unload",
-    Callback = function()
-      window:Destroy()
-    end,
-  })
-
-  X64UI:RegisterCommand("Reset Controls", {
-    Description = "Restore demo controls to defaults",
-    Keywords = { "reset", "defaults", "configuration" },
-    Callback = function()
-      enabled:SetValue(true)
-      window.Options.Speed:SetValue(50)
-      window.Options.Mode:SetValue("Balanced")
-      window.Options.Note:SetValue("")
-      window.Options.Hotkey:SetValue("None")
-      window.History:Clear()
-      window:SetStatus("Controls reset")
-    end,
-  })
-
-  window:Log("X64UI advanced desktop build loaded.")
-  window:SetStatus("Ready")
-end
-
--- Optional global export for loadstring/loaders.
+-- Global export for other scripts to pick up.
 if getgenv then
   getgenv().X64UI = X64UI
 elseif shared then
