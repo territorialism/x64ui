@@ -1,37 +1,10 @@
 # X64UI
 
-x64dbg ui library
+x64dbg-inspired UI library for Roblox exploit scripts. Built entirely with native GUI instances (no external dependencies, no Drawing API, no external assets).
+
+Desktop only. I made this for myself and figured other people might find it useful.
 
 ## Loadstring
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
-```
-
-## Example
-
-```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
-
-local X64UI = getgenv and getgenv().X64UI or shared.X64UI
-
-local window = X64UI:CreateWindow({ Title = "My Hub" })
-local tab = window:AddTab("Main")
-local group = tab:AddLeftGroupbox("Controls")
-
-group:AddToggle("MyToggle", {
-  Text = "Enable Feature",
-  Default = false,
-  Callback = function(value)
-    print("Toggle:", value)
-  end,
-})
-```
-
-## Hotkeys
-
-| Key | Action |
-|-----|--------|
-| `RightShift` | Toggle UI visibility |
-| `Ctrl+P` | Open command palette |
-| Double-click titlebar | Maximize / Restore |
+local X64UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
