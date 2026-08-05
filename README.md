@@ -1,8 +1,8 @@
 # X64UI
 
-x64dbg-inspired UI library for Roblox exploit scripts. Built entirely with native GUI instances (no external dependencies, no Drawing API, no external assets).
+x64dbg-inspired ui library for scripts built entirely with native gui instances
 
-Desktop only. I made this for myself and figured other people might find it useful.
+desktop only. i made this for myself and figured other people might find it useful
 
 ## Loadstring
 
