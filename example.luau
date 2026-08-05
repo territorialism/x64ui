@@ -1,16 +1,20 @@
 --[[
   X64UI Example Script
-  Run the loader first, then this.
+
+  Load the library first using loader.luau, then run this.
+  If you're combining everything into one script, just paste the
+  loader and library above this block.
 ]]
 
-local X64UI = (getgenv and getgenv().X64UI) or (shared and shared.X64UI)
+local X64UI = (getgenv and getgenv().X64UI)
+  or (shared and shared.X64UI)
 
 if not X64UI then
-  warn("[X64UI] Library not loaded. Run the loader first.")
+  warn("[X64UI] Library not loaded. Run loader.luau first.")
   return
 end
 
--- ==================== CREATE WINDOW ====================
+-- ==================== WINDOW ====================
 
 local window = X64UI:CreateWindow({
   Title = "My Game Hub",
@@ -52,11 +56,11 @@ left:AddDropdown("TargetPart", {
   end,
 })
 
-right:AddInput("ConfigName", {
-  Text = "Config Name",
-  Placeholder = "default",
+left:AddInput("Note", {
+  Text = "Note",
+  Placeholder = "Write something here...",
   Callback = function(value)
-    print("Config Name:", value)
+    print("Note:", value)
   end,
 })
 
@@ -89,19 +93,31 @@ right:AddButton({
 })
 
 right:AddButton({
+  Text = "Notify",
+  Callback = function()
+    X64UI:Notify({
+      Title = "X64UI",
+      Description = "Notifications work like this.",
+      Time = 3,
+    })
+  end,
+})
+
+right:AddButton({
   Text = "Unload",
   Callback = function()
     window:Destroy()
   end,
 })
 
--- ==================== CUSTOM COMMANDS ====================
+-- ==================== COMMANDS ====================
 
 X64UI:RegisterCommand("Kill All", {
   Description = "Eliminate all targets",
   Keywords = { "kill", "eliminate", "combat" },
   Callback = function()
     print("Kill All executed")
+    window:Log("Kill All ran")
   end,
 })
 
