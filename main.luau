@@ -1,13 +1,17 @@
 --[[
   X64UI main entry
-  assembles in-repo source parts (no external paste hosts)
+  assembles in-repo source parts only (no paste hosts)
 ]]
 local BASE = "https://raw.githubusercontent.com/territorialism/x64ui/main/"
 local PARTS = {
-  "src/part1.luau",
-  "src/part2.luau",
-  "src/part3.luau",
-  "src/part4.luau",
+  "src/part1a.luau",
+  "src/part1b.luau",
+  "src/part2a.luau",
+  "src/part2b.luau",
+  "src/part3a.luau",
+  "src/part3b.luau",
+  "src/part4a.luau",
+  "src/part4b.luau",
   "src/part5.luau"
 }
 
