@@ -10,7 +10,7 @@ desktop only. i made this for myself and figured other people might find it usef
 local X64UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
 ```
 
-The loader handles executor-specific HTTP wrappers automatically (Synapse, Fluxus, Krnl, Wave, etc.) and falls back to `game:HttpGet`. It also exports the library to `getgenv().X64UI` so other scripts in the same executor can access it.
+The loader handles executor-specific HTTP wrappers automatically (`syn.request`, `http.request`, `http_request`, `request`, Fluxus) and falls back to `game:HttpGet`. After a successful load it exports the library to `getgenv().X64UI` (or `shared.X64UI`) so other scripts in the same executor can access it.
 
 ## Quick Start
 
@@ -21,6 +21,7 @@ local window = X64UI:CreateWindow({
   Title = "My Script",
   Width = 1020,
   Height = 660,
+  SingleInstance = true, -- default true; set false to allow multiple windows
 })
 
 local tab = window:AddTab("Main")
@@ -29,7 +30,9 @@ local left = tab:AddLeftGroupbox("Features")
 left:AddToggle("Aimbot", {
   Text = "Enable Aimbot",
   Default = false,
-  Callback = function(v) print(v) end,
+  Callback = function(newValue, oldValue)
+    print(oldValue, "->", newValue)
+  end,
 })
 
 left:AddSlider("FOV", {
@@ -38,20 +41,26 @@ left:AddSlider("FOV", {
   Max = 500,
   Default = 150,
   Rounding = 0,
-  Callback = function(v) print(v) end,
+  Callback = function(newValue, oldValue)
+    print(oldValue, "->", newValue)
+  end,
 })
 
 left:AddDropdown("Part", {
   Text = "Target Part",
   Values = { "Head", "Torso", "HumanoidRootPart" },
   Default = "Head",
-  Callback = function(v) print(v) end,
+  Callback = function(newValue, oldValue)
+    print(oldValue, "->", newValue)
+  end,
 })
 ```
 
 ## Controls
 
 Every tab splits into a left and right column. Add groupboxes to either side, then fill them with controls.
+
+Callbacks for value controls receive `(newValue, oldValue)`. Buttons receive no args.
 
 ### Labels
 
@@ -77,11 +86,14 @@ group:AddButton({
 local toggle = group:AddToggle("MyToggle", {
   Text = "Enable Feature",
   Default = false,
-  Callback = function(v) print(v) end,
+  Callback = function(newValue, oldValue) print(oldValue, "->", newValue) end,
 })
 
-toggle:SetValue(true)   -- set programmatically
-toggle:GetValue()        -- read current value
+toggle:SetValue(true)
+toggle:GetValue()
+toggle:SetVisible(true)
+toggle:SetDisabled(false)
+toggle:SetReadOnly(false)
 ```
 
 ### Sliders
@@ -92,8 +104,8 @@ local slider = group:AddSlider("MySlider", {
   Min = 0,
   Max = 100,
   Default = 50,
-  Rounding = 0,          -- decimal places (0 = integers)
-  Callback = function(v) print(v) end,
+  Rounding = 0,
+  Callback = function(newValue, oldValue) print(oldValue, "->", newValue) end,
 })
 
 slider:SetValue(75)
@@ -102,16 +114,27 @@ slider:GetValue()
 
 ### Dropdowns
 
+Supports single-select, multi-select, and searchable lists.
+
 ```lua
 local dropdown = group:AddDropdown("MyDropdown", {
   Text = "Mode",
   Values = { "Easy", "Normal", "Hard" },
   Default = "Normal",
-  Callback = function(v) print(v) end,
+  Searchable = false,
+  Multi = false,
+  Callback = function(newValue, oldValue) print(oldValue, "->", newValue) end,
 })
 
-dropdown:SetValue("Hard")
-dropdown:GetValue()
+-- multi + searchable
+group:AddDropdown("Weapons", {
+  Text = "Weapons",
+  Values = { "Rifle", "SMG", "Pistol", "Shotgun" },
+  Multi = true,
+  Searchable = true,
+  Default = {},
+  Callback = function(selected) print(#selected, "selected") end,
+})
 ```
 
 ### Text Inputs
@@ -121,11 +144,8 @@ local input = group:AddInput("MyInput", {
   Text = "Username",
   Placeholder = "Type here...",
   Default = "",
-  Callback = function(v) print(v) end,
+  Callback = function(newValue, oldValue) print(oldValue, "->", newValue) end,
 })
-
-input:SetValue("admin")
-input:GetValue()
 ```
 
 ### Key Pickers
@@ -134,11 +154,67 @@ input:GetValue()
 local keybind = group:AddKeyPicker("MyKey", {
   Text = "Toggle Key",
   Default = "Q",
-  Callback = function(v) print("Key set to:", v) end,
+  Callback = function(newValue, oldValue) print("Key set to:", newValue) end,
+})
+```
+
+### Color Picker
+
+```lua
+group:AddColorPicker("ESPColor", {
+  Text = "ESP Color",
+  Default = Color3.fromRGB(0, 122, 204),
+  Callback = function(newColor, oldColor) end,
+})
+```
+
+### Numeric Input
+
+```lua
+group:AddNumericInput("MaxDist", {
+  Text = "Max Distance",
+  Min = 0,
+  Max = 2000,
+  Default = 500,
+  Callback = function(newValue, oldValue) end,
+})
+```
+
+### List Box
+
+```lua
+group:AddListBox("Priority", {
+  Text = "Priority",
+  Values = { "Closest", "Lowest HP", "Highest Threat" },
+  Multi = false,
+  Height = 100,
+  Callback = function(newValue, oldValue) end,
+})
+```
+
+### Table / Tree
+
+```lua
+group:AddTable("Scores", {
+  Text = "Scores",
+  Columns = { "Name", "Kills", "Deaths" },
+  Rows = {
+    { Name = "Player1", Kills = 12, Deaths = 3 },
+    { Name = "Player2", Kills = 8, Deaths = 5 },
+  },
+  Height = 120,
 })
 
-keybind:SetValue("E")
-keybind:GetValue()
+group:AddTree("Hierarchy", {
+  Text = "Folders",
+  Nodes = {
+    { Text = "Root", Children = {
+      { Text = "Child A" },
+      { Text = "Child B", Children = { { Text = "Leaf" } } },
+    }},
+  },
+  Height = 140,
+})
 ```
 
 ### Dividers
@@ -150,19 +226,31 @@ group:AddDivider()
 ## Window Methods
 
 ```lua
-window:Log("Message to console")        -- write to the log panel
-window:ClearLog()                        -- clear the log panel
-window:SetStatus("Ready")                -- update the status bar
-window:SaveConfig("config.json")         -- save all toggle/slider/input values
-window:LoadConfig("config.json")         -- load saved values
-window:Destroy()                         -- close and clean up everything
+window:Log("Message to console")
+window:ClearLog()
+window:SetStatus("Ready")
+window:SaveConfig("config.json")
+window:LoadConfig("config.json", {
+  Silent = false,
+  FireCallbacks = false,
+  RecordHistory = false,
+  ApplyLayout = true,
+})
+window:Destroy()
+window:Show()
+window:Hide()
+window:Toggle()
+window:SetMinimized(true)
+window:SetMaximized(true)
 ```
+
+`X64UI.Windows` holds all live windows. `X64UI.ActiveWindow` is the focused one.
+
+`CreateWindow({ SingleInstance = false })` allows multiple windows at once.
 
 ## Command Palette
 
-Press `Ctrl+P` to open the command palette. Type to fuzzy-search registered commands, use arrow keys to navigate, press Enter to execute.
-
-Register your own commands:
+Press `Ctrl+P` to open the command palette. Type to search, arrow keys to navigate, Enter to execute.
 
 ```lua
 X64UI:RegisterCommand("Teleport", {
@@ -174,16 +262,26 @@ X64UI:RegisterCommand("Teleport", {
 })
 ```
 
-Built-in commands: toggle window, maximize, minimize, undo/redo, toggle console, toggle status bar, clear log, save/load config.
-
 ## Notifications
 
 ```lua
 X64UI:Notify({
   Title = "Alert",
   Description = "Something happened.",
-  Time = 5,  -- seconds (default: 3)
+  Time = 5,
 })
+```
+
+Visible notifications are capped; older ones are removed first.
+
+## Dialogs
+
+```lua
+X64UI:Dialog({
+  Title = "Confirm",
+  Message = "Are you sure?",
+})
+-- or window:ShowModal({ Title, Message, ConfirmText, CancelText, Callback })
 ```
 
 ## Hotkeys
@@ -193,20 +291,26 @@ X64UI:Notify({
 | `RightShift` | Toggle window visibility (change with `X64UI.MenuKeybind`) |
 | `Ctrl+P` | Open/close command palette |
 | Double-click title bar | Maximize / restore |
+| Esc | Close open dropdown / command palette / cancel key capture |
 
 ## Config System
 
-`window:SaveConfig()` writes all named toggles, sliders, dropdowns, inputs, and keybinds to a JSON file using the executor's `writefile`. `window:LoadConfig()` reads them back and applies the values silently (no callbacks fire, no history entries created).
+`window:SaveConfig(path)` writes named toggles/options (and layout) via the executor filesystem (`Platform` wrappers).
 
-Config files are stored in your executor's workspace folder.
+`window:LoadConfig(path, opts)` supports:
+
+- `Silent` — suppress log message
+- `FireCallbacks` — whether control callbacks fire (default true unless you set false)
+- `RecordHistory` — wrap apply in a history transaction
+- `ApplyLayout` — restore size/position
 
 ## Undo / Redo
 
-Every toggle, slider, dropdown, input, and keybind change is tracked in an undo stack (up to 150 entries). Access it through `window.History:UndoLast()` and `window.History:RedoLast()`. The command palette has these built in, or you can bind them to buttons.
+Tracked via `window.History:UndoLast()` / `RedoLast()`. Transactions (`BeginTransaction` / `EndTransaction`) group multiple changes.
 
 ## Theme
 
-All colors are defined in `X64UI.Theme`. Override them before calling `CreateWindow` if you want a different look:
+Override before `CreateWindow`:
 
 ```lua
 X64UI.Theme.Background = Color3.fromRGB(10, 10, 10)
@@ -215,48 +319,29 @@ X64UI.Theme.Accent = Color3.fromRGB(255, 0, 128)
 
 ## Architecture
 
-- **Signal bus** — custom event system, no RBXScriptSignal dependency
-- **Maid cleanup** — all connections, instances, and tasks tracked and destroyed together
-- **Observable state** — controls backed by State objects with change signals
-- **History stack** — undo/redo for all user interactions
-- **Viewport clamping** — window stays on screen, resize grip respects screen bounds
-- **No CanvasGroup on main window** — avoids the engine's 1024x1024 texture blur bug when maximized
+- **Registry** — per-window control registry (no global Options/Toggles pollution)
+- **Signal bus** — custom event system
+- **Maid cleanup** — connections, instances, tasks destroyed together
+- **Observable state** — State objects with change signals
+- **History stack** — undo/redo with optional transactions
+- **Platform** — file ops go through Platform wrappers
+- **Glyphs** — safe unicode for check/arrow/grip
+- **Viewport clamping** — window stays on screen
+- **No CanvasGroup on main window** — avoids 1024×1024 texture blur when maximized
 
 ## Executor Compatibility
 
-Works on anything with a Luau runtime and basic `game:HttpGet`. Tested on Synapse X, ScriptWare, Fluxus, Krnl, and Wave. The loader auto-detects executor-specific HTTP wrappers.
+Works on Luau executors with basic HTTP. Loader auto-detects common request APIs and falls back to `game:HttpGet`.
 
-If your executor doesn't support `writefile`/`readfile`, the config system will log a message and skip silently.
+If `writefile` / `readfile` are missing, config save/load logs and skips.
 
 ## Known Limitations
 
-- Desktop only. No touch/mobile support and I have no plans to add it.
-- `CanvasGroup` is used for notifications (they're small so the texture limit doesn't matter). The main window uses a plain `Frame` to avoid blur.
-- Dropdown lists are children of the root ScreenGui so they can render above other elements. If you create multiple windows, dropdowns from all of them share the same parent.
-- The command palette only supports single-keyword fuzzy matching, not multi-word queries.
+- Desktop only. No touch/mobile support.
+- CanvasGroup used for notifications only (small, so texture limit is fine).
+- Dropdown lists parented to root ScreenGui so they render above content.
+- Command palette is simple substring search, not full multi-word fuzzy ranking.
 
 ## License
 
 MIT. Do whatever you want with it.
-```
-
----
-
-**Commit message for the full overhaul:**
-
-```
-fix(all): fix 8 bugs, remove demo from library, rewrite docs
-
-- loader: add executor HTTP wrapper chain, add loadstring error capture
-- loader: export to getgenv/shared after loading
-- main: add unpack polyfill for older executors
-- main: fix getParent() crash when LocalPlayer not loaded
-- main: fix viewport clamping (add GuiInset offset)
-- main: fix drag snapping (use GetMouseLocation consistently)
-- main: fix CanvasGroup blur when maximized (use Frame instead)
-- main: fix corner resize exceeding viewport (dynamic limits)
-- main: cap ZIndex at 32767 (was 999999)
-- main: remove built-in demo from library file
-- example: add nil safety checks, add notification demo
-- readme: complete rewrite with full API docs
-```
