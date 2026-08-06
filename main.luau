@@ -1,28 +1,15 @@
 --[[
-  X64UI Advanced Desktop Rework
-  Desktop-only, no mobile/touch support
-  Maid cleanup, Signal bus, observable state, undo/redo history
-  Command palette (Ctrl+P), config save/load, window focus management
-  Responsive viewport clamping, fast CanvasGroup fade-in intro
-
-  Changelog (4.0.4):
-  - Fixed unpack polyfill for older executors
-  - Fixed getParent() crash when LocalPlayer hasn't loaded yet
-  - Fixed viewport clamping snapping UI upward during drag (GuiInset offset)
-  - Fixed drag snapping caused by InputObject.Position vs GetMouseLocation mismatch
-  - Fixed CanvasGroup resolution blur when maximized (1024x1024 internal texture limit)
-  - Fixed corner resize exceeding viewport bounds (hardcoded 1900x1300 limits removed)
-  - Fixed ZIndex = 999999 rendering glitches (capped at 32767)
-  - Removed built-in demo from library file (moved to example.luau)
+made by iris
+d = desktop
+5.1.0d
 ]]
 
 local X64UI = {
-  Version = "4.0.4-desktop",
+  Version = "5.1.0d",
   MenuKeybind = Enum.KeyCode.RightShift,
-  CurrentWindow = nil,
+  Windows = {},
+  ActiveWindow = nil,
   NotifyGui = nil,
-  Toggles = {},
-  Options = {},
   Commands = {},
   CommandOrder = {},
   FocusCounter = 0,
@@ -93,6 +80,85 @@ local traceback = (debug and debug.traceback) and debug.traceback or function(er
   return tostring(err)
 end
 
+-- ==================== PHASE 1: STRUCTURAL FIXES ====================
+
+-- core/log.lua
+local Log = {}
+function Log.info(m) print("[X64UI] " .. tostring(m)) end
+function Log.warn(m) warn("[X64UI] " .. tostring(m)) end
+function Log.error(m) warn("[X64UI ERROR] " .. tostring(m)) end
+
+-- core/platform.lua
+local Platform = {}
+function Platform.readFile(p) return isfile and isfile(p) and readfile and readfile(p) or nil end
+function Platform.writeFile(p, d) if writefile then writefile(p, d) return true end return false end
+function Platform.fileExists(p) return isfile and isfile(p) or false end
+function Platform.deleteFile(p) if delfile then delfile(p) end end
+
+-- ui/glyphs.lua (Replaces corrupted Unicode strings)
+local Glyphs = {
+  Check = "\226\156\147",       -- ✓
+  Cross = "\226\156\149",       -- ✕
+  ArrowDown = "\226\150\188",   -- ▼
+  ArrowRight = "\226\150\182",  -- ▶
+  Grip = "\226\151\162",        -- ◢
+  Minimize = "\226\128\148",    -- —
+  Close = "X",
+  Search = "\240\159\148\141"   -- 🔍
+}
+
+-- services/registry.lua
+local Registry = {}
+Registry.__index = Registry
+function Registry.new()
+  return setmetatable({ Controls = {}, Toggles = {}, Options = {} }, Registry)
+end
+function Registry:Register(name, control, controlType)
+  if not name then return end
+  self.Controls[name] = control
+  if controlType == "Toggle" then
+    self.Toggles[name] = control
+  else
+    self.Options[name] = control
+  end
+end
+function Registry:Unregister(name)
+  self.Controls[name] = nil
+  self.Toggles[name] = nil
+  self.Options[name] = nil
+end
+function Registry:Get(name) return self.Controls[name] end
+function Registry:Clear()
+  for _, c in pairs(self.Controls) do
+    if c.Destroy then pcall(c.Destroy, c) end
+  end
+  table.clear(self.Controls)
+  table.clear(self.Toggles)
+  table.clear(self.Options)
+end
+
+-- core/create.lua (Strict replacement for create())
+local Create = {}
+function Create.create(className, props, children)
+  assert(type(className) == "string", "Create.create: className must be a string")
+  assert(props == nil or type(props) == "table", "Create.create: props must be a table or nil")
+  assert(children == nil or type(children) == "table", "Create.create: children must be a table or nil")
+  
+  local inst = Instance.new(className)
+  for k, v in pairs(props or {}) do
+    if k ~= "Parent" then
+      pcall(function() inst[k] = v end)
+    end
+  end
+  for _, child in ipairs(children or {}) do
+    child.Parent = inst
+  end
+  if props and props.Parent then
+    inst.Parent = props.Parent
+  end
+  return inst
+end
+
 -- ==================== SIGNAL ====================
 
 local Signal = {}
@@ -156,7 +222,7 @@ function Signal:Fire(...)
         end, traceback)
 
         if not ok then
-          warn("[X64UI] Signal callback failed:\n" .. tostring(err))
+          Log.warn("Signal callback failed:\n" .. tostring(err))
         end
       end)
     end
@@ -267,7 +333,7 @@ function State:Destroy()
   self.Changed:Destroy()
 end
 
--- ==================== HISTORY ====================
+-- ==================== HISTORY (Phase 4: Transaction-Aware) ====================
 
 local History = {}
 History.__index = History
@@ -278,11 +344,34 @@ function History.new(limit)
     RedoStack = {},
     Limit = limit or 100,
     Applying = false,
+    Transaction = nil,
   }, History)
+end
+
+function History:BeginTransaction(label)
+  self.Transaction = { Label = label, Undos = {}, Redos = {} }
+end
+
+function History:EndTransaction()
+  if not self.Transaction then return end
+  local t = self.Transaction
+  self.Transaction = nil
+  if #t.Undos > 0 then
+    self:Push(t.Label, 
+      function() for i = #t.Undos, 1, -1 do t.Undos[i]() end end, 
+      function() for i = 1, #t.Redos do t.Redos[i]() end end
+    )
+  end
 end
 
 function History:Push(label, undo, redo)
   if self.Applying then
+    return
+  end
+
+  if self.Transaction then
+    table.insert(self.Transaction.Undos, undo)
+    table.insert(self.Transaction.Redos, redo)
     return
   end
 
@@ -311,7 +400,7 @@ function History:UndoLast()
   self.Applying = false
 
   if not ok then
-    warn("[X64UI] Undo failed:\n" .. tostring(err))
+    Log.warn("Undo failed:\n" .. tostring(err))
     table.insert(self.UndoStack, entry)
     return false
   end
@@ -332,7 +421,7 @@ function History:RedoLast()
   self.Applying = false
 
   if not ok then
-    warn("[X64UI] Redo failed:\n" .. tostring(err))
+    Log.warn("Redo failed:\n" .. tostring(err))
     table.insert(self.RedoStack, entry)
     return false
   end
@@ -346,29 +435,56 @@ function History:Clear()
   table.clear(self.RedoStack)
 end
 
--- ==================== HELPERS ====================
+-- ==================== PHASE 3: LIFECYCLE HARDENING (InputManager) ====================
 
-local function create(className, props, children)
-  local inst = Instance.new(className)
+local InputManager = { Capturing = false, Callback = nil }
+function InputManager:Capture(cb) self.Capturing = true self.Callback = cb end
+function InputManager:Cancel() self.Capturing = false self.Callback = nil end
 
-  for k, v in pairs(props or {}) do
-    if k ~= "Parent" then
-      pcall(function()
-        inst[k] = v
-      end)
-    end
-  end
+-- ==================== PHASE 5: UX (Tooltips & Modals) ====================
 
-  for _, child in ipairs(children or {}) do
-    child.Parent = inst
-  end
-
-  if props and props.Parent then
-    inst.Parent = props.Parent
-  end
-
-  return inst
+local TooltipGui, TooltipLabel
+local function InitTooltip()
+  if TooltipGui then return end
+  TooltipGui = Create.create("ScreenGui", {
+    Name = "X64Tooltip", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 99999, Parent = getParent()
+  })
+  TooltipLabel = Create.create("TextLabel", {
+    Parent = TooltipGui, Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+    BackgroundColor3 = Theme.PanelAlt, BorderColor3 = Theme.Border, Text = "",
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text, Visible = false, ZIndex = 99999
+  })
 end
+
+local function ShowTooltip(text, pos)
+  InitTooltip()
+  TooltipLabel.Text = text
+  TooltipLabel.Position = UDim2.fromOffset(pos.X + 10, pos.Y + 10)
+  TooltipLabel.Visible = true
+end
+
+local function HideTooltip() if TooltipLabel then TooltipLabel.Visible = false end end
+
+function X64UI:Dialog(opts)
+  opts = opts or {}
+  local gui = Create.create("ScreenGui", {
+    Name = "X64Dialog", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 99998, Parent = getParent()
+  })
+  local bg = Create.create("Frame", {
+    Parent = gui, Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0,0,0), BackgroundTransparency = 0.5, ZIndex = 99990
+  })
+  local frame = Create.create("Frame", {
+    Parent = gui, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(400, 200), BackgroundColor3 = Theme.Panel, BorderColor3 = Theme.Border, ZIndex = 99991
+  })
+  local closeBtn = Create.create("TextButton", {
+    Parent = frame, Size = UDim2.fromOffset(80, 30), Position = UDim2.new(0.5, -40, 1, -40),
+    BackgroundColor3 = Theme.Button, Text = "Close", Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text, ZIndex = 99992
+  })
+  closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+end
+
+-- ==================== HELPERS ====================
 
 local function getParent()
   if gethui then
@@ -455,11 +571,11 @@ local function isControlValueValid(control, value)
   end
 
   if control.Type == "Dropdown" then
-    if typeof(value) ~= "string" and typeof(value) ~= "number" then
+    if typeof(value) ~= "string" and typeof(value) ~= "number" and typeof(value) ~= "table" then
       return false
     end
 
-    if control.Values then
+    if control.Values and typeof(value) ~= "table" then
       return table.find(control.Values, value) ~= nil
     end
 
@@ -496,6 +612,21 @@ Tab.__index = Tab
 
 local Groupbox = {}
 Groupbox.__index = Groupbox
+
+-- ==================== PHASE 2: CONTROL API STANDARDIZATION (BaseControl) ====================
+
+local BaseControl = {}
+BaseControl.__index = BaseControl
+function BaseControl.new(type, frame, window, name)
+  return setmetatable({ Type = type, Frame = frame, Window = window, Name = name, Visible = true, Disabled = false, ReadOnly = false }, BaseControl)
+end
+function BaseControl:SetVisible(v) self.Visible = v if self.Frame then self.Frame.Visible = v end end
+function BaseControl:SetDisabled(v) self.Disabled = v end
+function BaseControl:SetReadOnly(v) self.ReadOnly = v end
+function BaseControl:Destroy()
+  if self.Frame then pcall(function() self.Frame:Destroy() end) end
+  if self.Window and self.Window.Registry and self.Name then self.Window.Registry:Unregister(self.Name) end
+end
 
 -- ==================== WINDOW CORE ====================
 
@@ -538,6 +669,8 @@ function Window:Focus()
   if self.Gui then
     self.Gui.DisplayOrder = 10000 + X64UI.FocusCounter
   end
+
+  X64UI.ActiveWindow = self
 
   if self.Events and self.Events.Focused then
     self.Events.Focused:Fire(self)
@@ -587,7 +720,7 @@ end
 function Window:CloseDropdowns()
   for _, dropdown in ipairs(self.Dropdowns) do
     if dropdown and dropdown.Close then
-      dropdown:Close()
+      pcall(function() dropdown:Close() end)
     end
   end
 end
@@ -786,13 +919,24 @@ function Window:Destroy()
     self:DisconnectAll()
   end
 
+  if self.Registry then
+    self.Registry:Clear()
+  end
+
   if self.Gui then
     self.Gui:Destroy()
     self.Gui = nil
   end
 
-  if X64UI.CurrentWindow == self then
-    X64UI.CurrentWindow = nil
+  for i, win in ipairs(X64UI.Windows) do
+    if win == self then
+      table.remove(X64UI.Windows, i)
+      break
+    end
+  end
+
+  if X64UI.ActiveWindow == self then
+    X64UI.ActiveWindow = X64UI.Windows[#X64UI.Windows] or nil
   end
 end
 
@@ -801,7 +945,7 @@ function Window:PlayIntro()
   self.IntroPlayed = true
 
   pcall(function()
-    local wash = create("CanvasGroup", {
+    local wash = Create.create("CanvasGroup", {
       Parent = self.Gui,
       Size = UDim2.fromScale(1, 1),
       BackgroundColor3 = Color3.fromRGB(7, 7, 9),
@@ -815,7 +959,7 @@ function Window:PlayIntro()
       self.Maid:Give(wash)
     end
 
-    local gradient = create("UIGradient", {
+    local gradient = Create.create("UIGradient", {
       Parent = wash,
       Rotation = 90,
       Offset = Vector2.new(0, -0.2),
@@ -1045,7 +1189,7 @@ function Window:AddTab(name)
   local order = #self.TabOrder + 1
   table.insert(self.TabOrder, name)
 
-  tab.Button = create("TextButton", {
+  tab.Button = Create.create("TextButton", {
     Parent = self.TabBar,
     Size = UDim2.fromOffset(0, 26),
     AutomaticSize = Enum.AutomaticSize.X,
@@ -1057,7 +1201,7 @@ function Window:AddTab(name)
     LayoutOrder = order,
   })
 
-  tab.Underline = create("Frame", {
+  tab.Underline = Create.create("Frame", {
     Parent = tab.Button,
     Size = UDim2.new(1, 0, 0, 2),
     Position = UDim2.new(0, 0, 1, -2),
@@ -1082,14 +1226,14 @@ function Window:AddTab(name)
     self:SelectTab(name)
   end))
 
-  tab.Page = create("Frame", {
+  tab.Page = Create.create("Frame", {
     Parent = self.Pages,
     Size = UDim2.fromScale(1, 1),
     BackgroundTransparency = 1,
     Visible = false,
   })
 
-  tab.LeftPane = create("ScrollingFrame", {
+  tab.LeftPane = Create.create("ScrollingFrame", {
     Parent = tab.Page,
     Size = UDim2.new(0.5, -3, 1, 0),
     Position = UDim2.new(0, 0, 0, 0),
@@ -1101,7 +1245,7 @@ function Window:AddTab(name)
     CanvasSize = UDim2.new(),
   })
 
-  tab.RightPane = create("ScrollingFrame", {
+  tab.RightPane = Create.create("ScrollingFrame", {
     Parent = tab.Page,
     Size = UDim2.new(0.5, -3, 1, 0),
     Position = UDim2.new(0.5, 3, 0, 0),
@@ -1113,19 +1257,19 @@ function Window:AddTab(name)
     CanvasSize = UDim2.new(),
   })
 
-  local leftList = create("UIListLayout", {
+  local leftList = Create.create("UIListLayout", {
     Parent = tab.LeftPane,
     Padding = UDim.new(0, 4),
     SortOrder = Enum.SortOrder.LayoutOrder,
   })
 
-  local rightList = create("UIListLayout", {
+  local rightList = Create.create("UIListLayout", {
     Parent = tab.RightPane,
     Padding = UDim.new(0, 4),
     SortOrder = Enum.SortOrder.LayoutOrder,
   })
 
-  create("UIPadding", {
+  Create.create("UIPadding", {
     Parent = tab.LeftPane,
     PaddingTop = UDim.new(0, 4),
     PaddingLeft = UDim.new(0, 4),
@@ -1133,7 +1277,7 @@ function Window:AddTab(name)
     PaddingBottom = UDim.new(0, 4),
   })
 
-  create("UIPadding", {
+  Create.create("UIPadding", {
     Parent = tab.RightPane,
     PaddingTop = UDim.new(0, 4),
     PaddingLeft = UDim.new(0, 4),
@@ -1153,42 +1297,48 @@ function Window:AddTab(name)
   return tab
 end
 
--- ==================== CONFIG ====================
+-- ==================== CONFIG (Phase 4: State and Config) ====================
 
 function Window:SaveConfig(path)
   path = path or "x64ui_config.json"
 
-  if not writefile then
+  if not Platform.writeFile then
     self:Log("writefile is not supported by this executor.")
     return false
   end
 
   local data = {
-    Version = 1,
+    Version = 2,
     Toggles = {},
     Options = {},
+    Layout = {},
   }
 
-  for name, toggle in pairs(self.Toggles) do
+  for name, toggle in pairs(self.Registry.Toggles) do
     if typeof(toggle.Value) == "boolean" then
       data.Toggles[name] = toggle.Value
     end
   end
 
-  for name, option in pairs(self.Options) do
+  for name, option in pairs(self.Registry.Options) do
     local valueType = typeof(option.Value)
 
-    if valueType == "number" or valueType == "string" or valueType == "boolean" then
+    if valueType == "number" or valueType == "string" or valueType == "boolean" or valueType == "table" then
       data.Options[name] = option.Value
     end
   end
+
+  data.Layout = {
+    Size = { self.Main.Size.X.Offset, self.Main.Size.Y.Offset },
+    Pos = { self.Main.Position.X.Offset, self.Main.Position.Y.Offset },
+  }
 
   local ok, json = pcall(function()
     return HttpService:JSONEncode(data)
   end)
 
   if ok then
-    writefile(path, json)
+    Platform.writeFile(path, json)
     self:Log("Config saved: " .. path)
   else
     self:Log("Config encode failed.")
@@ -1197,16 +1347,22 @@ function Window:SaveConfig(path)
   return ok
 end
 
-function Window:LoadConfig(path)
+function Window:LoadConfig(path, loadOpts)
   path = path or "x64ui_config.json"
+  loadOpts = loadOpts or {}
 
-  if not readfile or not isfile or not isfile(path) then
+  local silent = loadOpts.Silent
+  local fireCallbacks = loadOpts.FireCallbacks ~= false
+  local recordHistory = loadOpts.RecordHistory ~= false
+  local applyLayout = loadOpts.ApplyLayout ~= false
+
+  if not Platform.fileExists(path) then
     self:Log("Config file not found.")
     return false
   end
 
-  local ok, json = pcall(readfile, path)
-  if not ok then
+  local json = Platform.readFile(path)
+  if not json then
     self:Log("Config read failed.")
     return false
   end
@@ -1220,48 +1376,55 @@ function Window:LoadConfig(path)
     return false
   end
 
-  if typeof(data.Toggles) ~= "table" then
-    data.Toggles = {}
+  -- Config migrations (Phase 4)
+  if not data.Version or data.Version < 2 then
+    data.Layout = data.Layout or {}
+    data.Version = 2
   end
 
-  if typeof(data.Options) ~= "table" then
-    data.Options = {}
-  end
+  if recordHistory then self.History:BeginTransaction("Load Config") end
 
-  local applied = 0
-
-  for name, value in pairs(data.Toggles) do
-    local toggle = self.Toggles[name]
-
-    if toggle and toggle.SetValue and isControlValueValid(toggle, value) then
-      toggle:SetValue(value, true)
-      applied += 1
-    end
-  end
-
-  for name, value in pairs(data.Options) do
-    local option = self.Options[name]
-
-    if option and option.SetValue then
-      if option.Type == "Slider" and typeof(value) == "number" then
-        value = math.clamp(value, option.Min or value, option.Max or value)
-      end
-
-      if isControlValueValid(option, value) then
-        option:SetValue(value, true)
-        applied += 1
+  if typeof(data.Toggles) == "table" then
+    for name, value in pairs(data.Toggles) do
+      local toggle = self.Registry:Get(name)
+      if toggle and toggle.SetValue and isControlValueValid(toggle, value) then
+        toggle:SetValue(value, not fireCallbacks)
       end
     end
   end
 
-  self:Log(("Config loaded: %s (%d values applied)"):format(path, applied))
+  if typeof(data.Options) == "table" then
+    for name, value in pairs(data.Options) do
+      local option = self.Registry:Get(name)
+
+      if option and option.SetValue then
+        if option.Type == "Slider" and typeof(value) == "number" then
+          value = math.clamp(value, option.Min or value, option.Max or value)
+        end
+
+        if isControlValueValid(option, value) then
+          option:SetValue(value, not fireCallbacks)
+        end
+      end
+    end
+  end
+
+  if applyLayout and typeof(data.Layout) == "table" then
+    if data.Layout.Size then self.Main.Size = UDim2.fromOffset(data.Layout.Size[1], data.Layout.Size[2]) end
+    if data.Layout.Pos then self.Main.Position = UDim2.fromOffset(data.Layout.Pos[1], data.Layout.Pos[2]) end
+    self:ClampToViewport()
+    self:UpdateLayout()
+  end
+
+  if recordHistory then self.History:EndTransaction() end
+  if not silent then self:Log(("Config loaded: %s"):format(path)) end
   return true
 end
 
 -- ==================== COMMAND PALETTE ====================
 
 function Window:CreateCommandPalette()
-  local palette = create("Frame", {
+  local palette = Create.create("Frame", {
     Parent = self.Gui,
     AnchorPoint = Vector2.new(0.5, 0),
     Position = UDim2.new(0.5, 0, 0, 90),
@@ -1272,7 +1435,7 @@ function Window:CreateCommandPalette()
     ZIndex = 5000,
   })
 
-  local input = create("TextBox", {
+  local input = Create.create("TextBox", {
     Parent = palette,
     Position = UDim2.fromOffset(8, 8),
     Size = UDim2.new(1, -16, 0, 30),
@@ -1287,7 +1450,7 @@ function Window:CreateCommandPalette()
     ZIndex = 5001,
   })
 
-  local results = create("ScrollingFrame", {
+  local results = Create.create("ScrollingFrame", {
     Parent = palette,
     Position = UDim2.fromOffset(8, 46),
     Size = UDim2.new(1, -16, 1, -54),
@@ -1299,7 +1462,7 @@ function Window:CreateCommandPalette()
     ZIndex = 5001,
   })
 
-  local layout = create("UIListLayout", {
+  local layout = Create.create("UIListLayout", {
     Parent = results,
     Padding = UDim.new(0, 3),
     SortOrder = Enum.SortOrder.LayoutOrder,
@@ -1341,13 +1504,6 @@ function Window:CreateCommandPalette()
 
   local function clearResults()
     itemMaid:Cleanup()
-
-    for _, child in ipairs(results:GetChildren()) do
-      if child:IsA("TextButton") then
-        child:Destroy()
-      end
-    end
-
     table.clear(visibleCommands)
     table.clear(resultButtons)
   end
@@ -1376,7 +1532,7 @@ function Window:CreateCommandPalette()
             text = text .. " — " .. command.Description
           end
 
-          local item = create("TextButton", {
+          local item = Create.create("TextButton", {
             Parent = results,
             Size = UDim2.new(1, 0, 0, 38),
             BackgroundColor3 = Theme.Button,
@@ -1504,7 +1660,7 @@ function Tab:AddGroupbox(side, title)
     NextOrder = 0,
   }, Groupbox)
 
-  group.Frame = create("Frame", {
+  group.Frame = Create.create("Frame", {
     Parent = parent,
     Size = UDim2.new(1, 0, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y,
@@ -1513,12 +1669,12 @@ function Tab:AddGroupbox(side, title)
     LayoutOrder = order,
   })
 
-  create("UIListLayout", {
+  Create.create("UIListLayout", {
     Parent = group.Frame,
     SortOrder = Enum.SortOrder.LayoutOrder,
   })
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = group.Frame,
     LayoutOrder = 0,
     Size = UDim2.new(1, 0, 0, 20),
@@ -1531,7 +1687,7 @@ function Tab:AddGroupbox(side, title)
     TextColor3 = Theme.Warning,
   })
 
-  group.Content = create("Frame", {
+  group.Content = Create.create("Frame", {
     Parent = group.Frame,
     LayoutOrder = 1,
     Size = UDim2.new(1, 0, 0, 0),
@@ -1539,13 +1695,13 @@ function Tab:AddGroupbox(side, title)
     BackgroundTransparency = 1,
   })
 
-  group.Layout = create("UIListLayout", {
+  group.Layout = Create.create("UIListLayout", {
     Parent = group.Content,
     Padding = UDim.new(0, 4),
     SortOrder = Enum.SortOrder.LayoutOrder,
   })
 
-  create("UIPadding", {
+  Create.create("UIPadding", {
     Parent = group.Content,
     PaddingTop = UDim.new(0, 4),
     PaddingLeft = UDim.new(0, 4),
@@ -1573,7 +1729,7 @@ function Tab:GetDefaultGroupbox()
 end
 
 local function createControlFrame(group, height, automatic, horizontal)
-  local row = create("Frame", {
+  local row = Create.create("Frame", {
     Parent = group.Content,
     Size = UDim2.new(1, 0, 0, height or 24),
     BackgroundTransparency = 1,
@@ -1586,7 +1742,7 @@ local function createControlFrame(group, height, automatic, horizontal)
     row.AutomaticSize = Enum.AutomaticSize.Y
   end
 
-  local layout = create("UIListLayout", {
+  local layout = Create.create("UIListLayout", {
     Parent = row,
     Padding = UDim.new(0, 3),
     SortOrder = Enum.SortOrder.LayoutOrder,
@@ -1605,7 +1761,7 @@ end
 function Groupbox:AddLabel(text, wrap)
   local row = createControlFrame(self, nil, true, false)
 
-  local label = create("TextLabel", {
+  local label = Create.create("TextLabel", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y,
@@ -1619,16 +1775,9 @@ function Groupbox:AddLabel(text, wrap)
     TextColor3 = Theme.Text,
   })
 
-  local obj = {
-    Type = "Label",
-    Label = label,
-    Frame = row,
-  }
-
-  function obj:SetText(newText)
-    label.Text = tostring(newText)
-  end
-
+  local obj = BaseControl.new("Label", row, self.Window, nil)
+  obj.Label = label
+  function obj:SetText(newText) label.Text = tostring(newText) end
   return obj
 end
 
@@ -1637,7 +1786,7 @@ function Groupbox:AddButton(opts)
 
   local row = createControlFrame(self, 26, false, false)
 
-  local button = create("TextButton", {
+  local button = Create.create("TextButton", {
     Parent = row,
     Size = UDim2.new(1, 0, 1, 0),
     BackgroundColor3 = Theme.Button,
@@ -1648,6 +1797,11 @@ function Groupbox:AddButton(opts)
     TextColor3 = Theme.Text,
   })
 
+  local obj = BaseControl.new("Button", row, self.Window, nil)
+  obj.Button = button
+
+  function obj:SetText(newText) button.Text = tostring(newText) end
+
   self.Window:Track(button.MouseEnter:Connect(function()
     button.BackgroundColor3 = Theme.ButtonHover
   end))
@@ -1657,22 +1811,17 @@ function Groupbox:AddButton(opts)
   end))
 
   self.Window:Track(button.MouseButton1Click:Connect(function()
-    if opts.Callback then
+    if not obj.Disabled and opts.Callback then
       local ok, err = xpcall(opts.Callback, traceback)
       if not ok then
-        warn("[X64UI] Button callback failed:\n" .. tostring(err))
-      end
-    elseif opts.Func then
-      local ok, err = xpcall(opts.Func, traceback)
-      if not ok then
-        warn("[X64UI] Button callback failed:\n" .. tostring(err))
+        Log.warn("Button callback failed:\n" .. tostring(err))
       end
     end
 
     self.Window:Log("Button: " .. tostring(opts.Text or "Button"))
   end))
 
-  return button
+  return obj
 end
 
 function Groupbox:AddToggle(name, opts)
@@ -1681,7 +1830,7 @@ function Groupbox:AddToggle(name, opts)
   local row = createControlFrame(self, 22, false, true)
   local state = State.new(opts.Default == true)
 
-  local check = create("TextButton", {
+  local check = Create.create("TextButton", {
     Parent = row,
     Size = UDim2.fromOffset(18, 18),
     BackgroundColor3 = Theme.PanelAlt,
@@ -1693,7 +1842,7 @@ function Groupbox:AddToggle(name, opts)
     AutoButtonColor = false,
   })
 
-  local label = create("TextButton", {
+  local label = Create.create("TextButton", {
     Parent = row,
     Size = UDim2.new(1, -24, 1, 0),
     BackgroundTransparency = 1,
@@ -1705,18 +1854,16 @@ function Groupbox:AddToggle(name, opts)
     AutoButtonColor = false,
   })
 
-  local obj = {
-    Type = "Toggle",
-    Value = state:Get(),
-    Button = check,
-    Changed = Signal.new(),
-  }
+  local obj = BaseControl.new("Toggle", row, self.Window, name)
+  obj.Value = state:Get()
+  obj.Button = check
+  obj.Changed = Signal.new()
 
   local internalChange = false
 
   local function render(value)
     obj.Value = value
-    check.Text = value and "✓" or ""
+    check.Text = value and Glyphs.Check or ""
     check.BackgroundColor3 = value and Theme.Accent or Theme.PanelAlt
   end
 
@@ -1740,11 +1887,11 @@ function Groupbox:AddToggle(name, opts)
 
       if opts.Callback then
         local ok, err = xpcall(function()
-          opts.Callback(value)
+          opts.Callback(value, previous)
         end, traceback)
 
         if not ok then
-          warn("[X64UI] Toggle callback failed:\n" .. tostring(err))
+          Log.warn("Toggle callback failed:\n" .. tostring(err))
         end
       end
     end
@@ -1781,17 +1928,11 @@ function Groupbox:AddToggle(name, opts)
     return state:Get()
   end
 
-  function obj:Destroy()
-    state:Destroy()
-    obj.Changed:Destroy()
-  end
-
   self.Window.Maid:Give(obj)
   render(state:Get())
 
   if name then
-    self.Window.Toggles[name] = obj
-    X64UI.Toggles[name] = obj
+    self.Window.Registry:Register(name, obj, "Toggle")
   end
 
   return obj
@@ -1808,19 +1949,19 @@ function Groupbox:AddSlider(name, opts)
 
   local row = createControlFrame(self, nil, true, false)
 
-  local header = create("Frame", {
+  local header = Create.create("Frame", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
   })
 
-  create("UIListLayout", {
+  Create.create("UIListLayout", {
     Parent = header,
     FillDirection = Enum.FillDirection.Horizontal,
     VerticalAlignment = Enum.VerticalAlignment.Center,
   })
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = header,
     Size = UDim2.new(1, -70, 1, 0),
     BackgroundTransparency = 1,
@@ -1831,7 +1972,7 @@ function Groupbox:AddSlider(name, opts)
     TextColor3 = Theme.Text,
   })
 
-  local valueLabel = create("TextLabel", {
+  local valueLabel = Create.create("TextLabel", {
     Parent = header,
     Size = UDim2.fromOffset(70, 16),
     BackgroundTransparency = 1,
@@ -1842,7 +1983,7 @@ function Groupbox:AddSlider(name, opts)
     TextColor3 = Theme.AccentText,
   })
 
-  local bar = create("TextButton", {
+  local bar = Create.create("TextButton", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 14),
     BackgroundColor3 = Theme.PanelAlt,
@@ -1851,20 +1992,18 @@ function Groupbox:AddSlider(name, opts)
     AutoButtonColor = false,
   })
 
-  local fill = create("Frame", {
+  local fill = Create.create("Frame", {
     Parent = bar,
     Size = UDim2.fromScale(0, 1),
     BackgroundColor3 = Theme.Accent,
     BorderSizePixel = 0,
   })
 
-  local obj = {
-    Type = "Slider",
-    Value = value,
-    Min = min,
-    Max = max,
-    Changed = Signal.new(),
-  }
+  local obj = BaseControl.new("Slider", row, self.Window, name)
+  obj.Value = value
+  obj.Min = min
+  obj.Max = max
+  obj.Changed = Signal.new()
 
   local function format(v)
     if step < 1 then
@@ -1902,11 +2041,11 @@ function Groupbox:AddSlider(name, opts)
 
       if opts.Callback then
         local ok, err = xpcall(function()
-          opts.Callback(v)
+          opts.Callback(v, previous)
         end, traceback)
 
         if not ok then
-          warn("[X64UI] Slider callback failed:\n" .. tostring(err))
+          Log.warn("Slider callback failed:\n" .. tostring(err))
         end
       end
     end
@@ -1965,16 +2104,11 @@ function Groupbox:AddSlider(name, opts)
     return obj.Value
   end
 
-  function obj:Destroy()
-    obj.Changed:Destroy()
-  end
-
   self.Window.Maid:Give(obj)
   set(value, true)
 
   if name then
-    self.Window.Options[name] = obj
-    X64UI.Options[name] = obj
+    self.Window.Registry:Register(name, obj, "Option")
   end
 
   return obj
@@ -1990,13 +2124,13 @@ function Groupbox:AddDropdown(name, opts)
     selected = values[selected]
   end
 
-  if not table.find(values, selected) then
+  if not table.find(values, selected) and not opts.Multi then
     selected = values[1]
   end
 
   local row = createControlFrame(self, nil, true, false)
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
@@ -2007,18 +2141,18 @@ function Groupbox:AddDropdown(name, opts)
     TextColor3 = Theme.Text,
   })
 
-  local button = create("TextButton", {
+  local button = Create.create("TextButton", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 20),
     BackgroundColor3 = Theme.PanelAlt,
     BorderColor3 = Theme.Border,
-    Text = "▼ " .. tostring(selected),
+    Text = Glyphs.ArrowDown .. " " .. tostring(selected),
     Font = Theme.Font,
     TextSize = Theme.TextSize,
     TextColor3 = Theme.Text,
   })
 
-  local list = create("ScrollingFrame", {
+  local list = Create.create("ScrollingFrame", {
     Parent = self.Window.Gui,
     Visible = false,
     BackgroundColor3 = Theme.Panel,
@@ -2030,26 +2164,37 @@ function Groupbox:AddDropdown(name, opts)
     ZIndex = 2000,
   })
 
-  local listLayout = create("UIListLayout", {
+  local searchBox = Create.create("TextBox", {
+    Parent = list,
+    Size = UDim2.new(1, 0, 0, 20),
+    BackgroundColor3 = Theme.PanelAlt,
+    BorderColor3 = Theme.Border,
+    PlaceholderText = Glyphs.Search .. " Search",
+    Text = "",
+    Font = Theme.Font,
+    TextSize = Theme.TextSize,
+    TextColor3 = Theme.Text,
+    ZIndex = 2001,
+  })
+
+  local listLayout = Create.create("UIListLayout", {
     Parent = list,
     SortOrder = Enum.SortOrder.LayoutOrder,
     Padding = UDim.new(0, 1),
   })
 
-  local obj = {
-    Type = "Dropdown",
-    Value = selected,
-    Values = values,
-    Button = button,
-    List = list,
-    OpenedAt = 0,
-    Changed = Signal.new(),
-  }
+  local obj = BaseControl.new("Dropdown", row, self.Window, name)
+  obj.Value = opts.Multi and {} or selected
+  obj.Values = values
+  obj.Button = button
+  obj.List = list
+  obj.OpenedAt = 0
+  obj.Changed = Signal.new()
 
   local internalChange = false
 
   local function getListHeight()
-    return math.min((#values * 19) + 2, 220)
+    return math.min((#values * 19) + 22, 220)
   end
 
   function obj:RefreshPosition()
@@ -2082,13 +2227,15 @@ function Groupbox:AddDropdown(name, opts)
   end
 
   local function set(value, silent, withHistory)
-    if not table.find(values, value) then return end
-
     local previous = obj.Value
-    if previous == value then return end
-
+    if not opts.Multi and not table.find(values, value) then return end
+    
     obj.Value = value
-    button.Text = "▼ " .. tostring(value)
+    if opts.Multi then
+      button.Text = Glyphs.ArrowDown .. " " .. tostring(#value) .. " selected"
+    else
+      button.Text = Glyphs.ArrowDown .. " " .. tostring(value)
+    end
 
     if not silent then
       obj.Changed:Fire(value, previous)
@@ -2099,11 +2246,11 @@ function Groupbox:AddDropdown(name, opts)
 
       if opts.Callback then
         local ok, err = xpcall(function()
-          opts.Callback(value)
+          opts.Callback(value, previous)
         end, traceback)
 
         if not ok then
-          warn("[X64UI] Dropdown callback failed:\n" .. tostring(err))
+          Log.warn("Dropdown callback failed:\n" .. tostring(err))
         end
       end
     end
@@ -2129,34 +2276,57 @@ function Groupbox:AddDropdown(name, opts)
     obj:Toggle()
   end))
 
-  for i, value in ipairs(values) do
-    local item = create("TextButton", {
-      Parent = list,
-      LayoutOrder = i,
-      Size = UDim2.new(1, 0, 0, 18),
-      BackgroundTransparency = 1,
-      Text = "  " .. tostring(value),
-      TextXAlignment = Enum.TextXAlignment.Left,
-      Font = Theme.Font,
-      TextSize = Theme.TextSize,
-      TextColor3 = Theme.Text,
-      ZIndex = 2001,
-    })
+  local function buildItems()
+    for _, child in ipairs(list:GetChildren()) do
+      if child:IsA("TextButton") and child ~= searchBox then child:Destroy() end
+    end
 
-    self.Window:Track(item.MouseEnter:Connect(function()
-      item.BackgroundColor3 = Theme.Selection
-      item.BackgroundTransparency = 0
-    end))
+    local query = string.lower(searchBox.Text or "")
+    local order = 1
 
-    self.Window:Track(item.MouseLeave:Connect(function()
-      item.BackgroundTransparency = 1
-    end))
+    for i, value in ipairs(values) do
+      if query == "" or string.find(string.lower(tostring(value)), query, 1, true) then
+        local item = Create.create("TextButton", {
+          Parent = list,
+          LayoutOrder = i,
+          Size = UDim2.new(1, 0, 0, 18),
+          BackgroundTransparency = 1,
+          Text = "  " .. tostring(value),
+          TextXAlignment = Enum.TextXAlignment.Left,
+          Font = Theme.Font,
+          TextSize = Theme.TextSize,
+          TextColor3 = Theme.Text,
+          ZIndex = 2001,
+        })
 
-    self.Window:Track(item.MouseButton1Click:Connect(function()
-      set(value, false, true)
-      obj:Close()
-    end))
+        self.Window:Track(item.MouseEnter:Connect(function()
+          item.BackgroundColor3 = Theme.Selection
+          item.BackgroundTransparency = 0
+        end))
+
+        self.Window:Track(item.MouseLeave:Connect(function()
+          item.BackgroundTransparency = 1
+        end))
+
+        self.Window:Track(item.MouseButton1Click:Connect(function()
+          if opts.Multi then
+            local current = table.clone(obj.Value)
+            local idx = table.find(current, value)
+            if idx then table.remove(current, idx) else table.insert(current, value) end
+            set(current, false, true)
+          else
+            set(value, false, true)
+            obj:Close()
+          end
+        end))
+        order += 1
+      end
+    end
+    list.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y + 2)
   end
+
+  self.Window:Track(searchBox:GetPropertyChangedSignal("Text"):Connect(buildItems))
+  buildItems()
 
   function obj:SetValue(value, silent)
     set(value, silent == true, false)
@@ -2168,15 +2338,16 @@ function Groupbox:AddDropdown(name, opts)
 
   function obj:Destroy()
     obj.Changed:Destroy()
+    if self.List then pcall(function() self.List:Destroy() end) end
+    BaseControl.Destroy(self)
   end
 
   self.Window.Maid:Give(obj)
-  set(selected, true)
+  if not opts.Multi then set(selected, true) end
   table.insert(self.Window.Dropdowns, obj)
 
   if name then
-    self.Window.Options[name] = obj
-    X64UI.Options[name] = obj
+    self.Window.Registry:Register(name, obj, "Option")
   end
 
   return obj
@@ -2187,7 +2358,7 @@ function Groupbox:AddInput(name, opts)
 
   local row = createControlFrame(self, nil, true, false)
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
@@ -2198,7 +2369,7 @@ function Groupbox:AddInput(name, opts)
     TextColor3 = Theme.Text,
   })
 
-  local box = create("TextBox", {
+  local box = Create.create("TextBox", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 20),
     BackgroundColor3 = Theme.PanelAlt,
@@ -2212,12 +2383,10 @@ function Groupbox:AddInput(name, opts)
     TextXAlignment = Enum.TextXAlignment.Left,
   })
 
-  local obj = {
-    Type = "Input",
-    Value = tostring(opts.Default or ""),
-    TextBox = box,
-    Changed = Signal.new(),
-  }
+  local obj = BaseControl.new("Input", row, self.Window, name)
+  obj.Value = tostring(opts.Default or "")
+  obj.TextBox = box
+  obj.Changed = Signal.new()
 
   local internalChange = false
   local focusedValue = obj.Value
@@ -2244,11 +2413,11 @@ function Groupbox:AddInput(name, opts)
 
       if opts.Callback then
         local ok, err = xpcall(function()
-          opts.Callback(value)
+          opts.Callback(value, previous)
         end, traceback)
 
         if not ok then
-          warn("[X64UI] Input callback failed:\n" .. tostring(err))
+          Log.warn("Input callback failed:\n" .. tostring(err))
         end
       end
     end
@@ -2294,15 +2463,10 @@ function Groupbox:AddInput(name, opts)
     return obj.Value
   end
 
-  function obj:Destroy()
-    obj.Changed:Destroy()
-  end
-
   self.Window.Maid:Give(obj)
 
   if name then
-    self.Window.Options[name] = obj
-    X64UI.Options[name] = obj
+    self.Window.Registry:Register(name, obj, "Option")
   end
 
   return obj
@@ -2313,7 +2477,7 @@ function Groupbox:AddKeyPicker(name, opts)
 
   local row = createControlFrame(self, 22, false, true)
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = row,
     Size = UDim2.new(1, -90, 1, 0),
     BackgroundTransparency = 1,
@@ -2324,7 +2488,7 @@ function Groupbox:AddKeyPicker(name, opts)
     TextColor3 = Theme.Text,
   })
 
-  local button = create("TextButton", {
+  local button = Create.create("TextButton", {
     Parent = row,
     Size = UDim2.fromOffset(90, 18),
     BackgroundColor3 = Theme.PanelAlt,
@@ -2335,14 +2499,10 @@ function Groupbox:AddKeyPicker(name, opts)
     TextColor3 = Theme.Text,
   })
 
-  local waiting = false
-
-  local obj = {
-    Type = "KeyPicker",
-    Value = tostring(opts.Default or "None"),
-    Button = button,
-    Changed = Signal.new(),
-  }
+  local obj = BaseControl.new("KeyPicker", row, self.Window, name)
+  obj.Value = tostring(opts.Default or "None")
+  obj.Button = button
+  obj.Changed = Signal.new()
 
   local internalChange = false
 
@@ -2364,11 +2524,11 @@ function Groupbox:AddKeyPicker(name, opts)
 
       if opts.Callback then
         local ok, err = xpcall(function()
-          opts.Callback(value)
+          opts.Callback(value, previous)
         end, traceback)
 
         if not ok then
-          warn("[X64UI] KeyPicker callback failed:\n" .. tostring(err))
+          Log.warn("KeyPicker callback failed:\n" .. tostring(err))
         end
       end
     end
@@ -2391,22 +2551,32 @@ function Groupbox:AddKeyPicker(name, opts)
   end
 
   self.Window:Track(button.MouseButton1Click:Connect(function()
-    waiting = true
-    self.Window.PickingKey = true
+    if obj.ReadOnly or obj.Disabled then return end
     button.Text = "Press key..."
+    InputManager:Capture(function(input)
+      if input.KeyCode == Enum.KeyCode.Escape then
+        set("None", false, true)
+      else
+        set(input.KeyCode.Name, false, true)
+      end
+      InputManager:Cancel()
+    end)
   end))
 
-  self.Window:Track(UserInputService.InputBegan:Connect(function(input)
-    if not waiting then return end
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-
-    waiting = false
-    self.Window.PickingKey = false
-
-    if input.KeyCode == Enum.KeyCode.Escape then
-      set("None", false, true)
-    else
-      set(input.KeyCode.Name, false, true)
+  self.Window:Track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not InputManager.Capturing or not InputManager.Callback then return end
+    
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+      InputManager:Cancel()
+      button.Text = obj.Value
+      return
+    end
+    
+    if gameProcessed then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+      InputManager.Callback(input)
     end
   end))
 
@@ -2418,16 +2588,11 @@ function Groupbox:AddKeyPicker(name, opts)
     return obj.Value
   end
 
-  function obj:Destroy()
-    obj.Changed:Destroy()
-  end
-
   self.Window.Maid:Give(obj)
   set(obj.Value, true)
 
   if name then
-    self.Window.Options[name] = obj
-    X64UI.Options[name] = obj
+    self.Window.Registry:Register(name, obj, "Option")
   end
 
   return obj
@@ -2435,47 +2600,461 @@ end
 
 function Groupbox:AddDivider()
   local row = createControlFrame(self, 8, false, false)
-
-  return create("Frame", {
+  local div = Create.create("Frame", {
     Parent = row,
     Size = UDim2.new(1, 0, 0, 1),
     Position = UDim2.new(0, 0, 0.5, 0),
     BackgroundColor3 = Theme.Border,
     BorderSizePixel = 0,
   })
+  local obj = BaseControl.new("Divider", row, self.Window, nil)
+  return obj
 end
 
-function Tab:AddLabel(...)
-  return self:GetDefaultGroupbox():AddLabel(...)
+function Groupbox:AddColorPicker(name, opts)
+  opts = opts or {}
+  local default = opts.Default or Color3.fromRGB(255, 255, 255)
+  local h, s, v = default:ToHSV()
+  local row = createControlFrame(self, 22, false, true)
+  Create.create("TextLabel", {
+    Parent = row, Size = UDim2.new(1, -50, 1, 0), BackgroundTransparency = 1,
+    Text = opts.Text or name or "Color", TextXAlignment = Enum.TextXAlignment.Left,
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text,
+  })
+  local preview = Create.create("TextButton", {
+    Parent = row, Size = UDim2.fromOffset(40, 18), BackgroundColor3 = default,
+    BorderColor3 = Theme.Border, Text = "", AutoButtonColor = false,
+  })
+  local picker = Create.create("Frame", {
+    Parent = self.Window.Gui, Visible = false, Size = UDim2.fromOffset(200, 180),
+    BackgroundColor3 = Theme.Panel, BorderColor3 = Theme.Border, ZIndex = 2500,
+  })
+  local satVal = Create.create("ImageButton", {
+    Parent = picker, Position = UDim2.fromOffset(8, 8), Size = UDim2.fromOffset(150, 120),
+    BackgroundColor3 = Color3.fromHSV(h, 1, 1), BorderSizePixel = 0, AutoButtonColor = false, ZIndex = 2501,
+  })
+  local blackOverlay = Create.create("Frame", {
+    Parent = satVal, Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0),
+    BackgroundTransparency = 0, BorderSizePixel = 0, ZIndex = 2502,
+  })
+  Create.create("UIGradient", {
+    Parent = blackOverlay,
+    Transparency = NumberSequence.new({
+      NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0),
+    }),
+    Rotation = 90,
+  })
+  local whiteOverlay = Create.create("Frame", {
+    Parent = satVal, Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1),
+    BackgroundTransparency = 0, BorderSizePixel = 0, ZIndex = 2501,
+  })
+  Create.create("UIGradient", {
+    Parent = whiteOverlay,
+    Transparency = NumberSequence.new({
+      NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1),
+    }),
+    Rotation = 0,
+  })
+  local hueBar = Create.create("TextButton", {
+    Parent = picker, Position = UDim2.fromOffset(166, 8), Size = UDim2.fromOffset(26, 120),
+    BackgroundColor3 = Color3.new(1, 0, 0), BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 2501,
+  })
+  Create.create("UIGradient", {
+    Parent = hueBar, Rotation = 90,
+    Color = ColorSequence.new({
+      ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+      ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 255, 0)),
+      ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 255, 0)),
+      ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+      ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 0, 255)),
+      ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
+      ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
+    }),
+  })
+  local obj = BaseControl.new("ColorPicker", row, self.Window, name)
+  obj.Value = default
+  obj.Hue, obj.Sat, obj.Val = h, s, v
+  obj.Changed = Signal.new()
+  local function applyColor(silent)
+    local c = Color3.fromHSV(obj.Hue, obj.Sat, obj.Val)
+    local prev = obj.Value
+    obj.Value = c
+    preview.BackgroundColor3 = c
+    satVal.BackgroundColor3 = Color3.fromHSV(obj.Hue, 1, 1)
+    if not silent then
+      obj.Changed:Fire(c, prev)
+      if opts.Callback then pcall(opts.Callback, c, prev) end
+    end
+  end
+  local function openPicker()
+    if obj.Disabled or obj.ReadOnly then return end
+    local pos = preview.AbsolutePosition
+    picker.Position = UDim2.fromOffset(pos.X, pos.Y + 22)
+    picker.Visible = true
+  end
+  local function closePicker() picker.Visible = false end
+  self.Window:Track(preview.MouseButton1Click:Connect(function()
+    if picker.Visible then closePicker() else openPicker() end
+  end))
+  self.Window:Track(satVal.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    local function update(pos)
+      local rel = satVal.AbsolutePosition
+      local size = satVal.AbsoluteSize
+      obj.Sat = math.clamp((pos.X - rel.X) / math.max(size.X, 1), 0, 1)
+      obj.Val = 1 - math.clamp((pos.Y - rel.Y) / math.max(size.Y, 1), 0, 1)
+      applyColor(false)
+    end
+    update(input.Position)
+    local conn, endConn
+    conn = UserInputService.InputChanged:Connect(function(inp)
+      if inp.UserInputType == Enum.UserInputType.MouseMovement then update(inp.Position) end
+    end)
+    endConn = UserInputService.InputEnded:Connect(function(inp)
+      if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        conn:Disconnect()
+        endConn:Disconnect()
+      end
+    end)
+  end))
+  self.Window:Track(hueBar.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    local function update(pos)
+      local rel = hueBar.AbsolutePosition
+      local size = hueBar.AbsoluteSize
+      obj.Hue = math.clamp((pos.Y - rel.Y) / math.max(size.Y, 1), 0, 1)
+      applyColor(false)
+    end
+    update(input.Position)
+    local conn, endConn
+    conn = UserInputService.InputChanged:Connect(function(inp)
+      if inp.UserInputType == Enum.UserInputType.MouseMovement then update(inp.Position) end
+    end)
+    endConn = UserInputService.InputEnded:Connect(function(inp)
+      if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        conn:Disconnect()
+        endConn:Disconnect()
+      end
+    end)
+  end))
+  self.Window:Track(UserInputService.InputBegan:Connect(function(input)
+    if not picker.Visible then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+      if not mouseOverGui(picker) and not mouseOverGui(preview) then closePicker() end
+    end
+  end))
+  function obj:SetValue(c, silent)
+    if typeof(c) ~= "Color3" then return end
+    obj.Hue, obj.Sat, obj.Val = c:ToHSV()
+    applyColor(silent)
+  end
+  function obj:GetValue() return obj.Value end
+  function obj:Destroy()
+    if picker and picker.Parent then pcall(function() picker:Destroy() end) end
+    BaseControl.Destroy(self)
+  end
+  if opts.Tooltip then
+    self.Window:Track(preview.MouseEnter:Connect(function() ShowTooltip(opts.Tooltip, getMousePos()) end))
+    self.Window:Track(preview.MouseLeave:Connect(HideTooltip))
+  end
+  self.Window.Maid:Give(obj)
+  if name then self.Window.Registry:Register(name, obj, "Option") end
+  applyColor(true)
+  return obj
 end
 
-function Tab:AddButton(...)
-  return self:GetDefaultGroupbox():AddButton(...)
+function Groupbox:AddNumericInput(name, opts)
+  opts = opts or {}
+  local minV = tonumber(opts.Min)
+  local maxV = tonumber(opts.Max)
+  local default = tonumber(opts.Default) or 0
+  local row = createControlFrame(self, nil, true, false)
+  Create.create("TextLabel", {
+    Parent = row, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
+    Text = opts.Text or name or "Number", TextXAlignment = Enum.TextXAlignment.Left,
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text,
+  })
+  local box = Create.create("TextBox", {
+    Parent = row, Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = Theme.PanelAlt,
+    BorderColor3 = Theme.Border, Text = tostring(default), ClearTextOnFocus = false,
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+  })
+  local obj = BaseControl.new("NumericInput", row, self.Window, name)
+  obj.Value = default
+  obj.Changed = Signal.new()
+  local function set(v, silent)
+    v = tonumber(v)
+    if not v then box.Text = tostring(obj.Value) return end
+    if minV then v = math.max(minV, v) end
+    if maxV then v = math.min(maxV, v) end
+    local prev = obj.Value
+    if prev == v then box.Text = tostring(v) return end
+    obj.Value = v
+    box.Text = tostring(v)
+    if not silent then
+      obj.Changed:Fire(v, prev)
+      if opts.Callback then pcall(opts.Callback, v, prev) end
+    end
+  end
+  self.Window:Track(box.FocusLost:Connect(function() set(box.Text, false) end))
+  function obj:SetValue(v, silent) set(v, silent) end
+  function obj:GetValue() return obj.Value end
+  function obj:SetDisabled(v)
+    BaseControl.SetDisabled(self, v)
+    box.TextEditable = not v
+  end
+  function obj:SetReadOnly(v)
+    BaseControl.SetReadOnly(self, v)
+    box.TextEditable = not v
+  end
+  if opts.Tooltip then
+    self.Window:Track(box.MouseEnter:Connect(function() ShowTooltip(opts.Tooltip, getMousePos()) end))
+    self.Window:Track(box.MouseLeave:Connect(HideTooltip))
+  end
+  self.Window.Maid:Give(obj)
+  if name then self.Window.Registry:Register(name, obj, "Option") end
+  return obj
 end
 
-function Tab:AddToggle(...)
-  return self:GetDefaultGroupbox():AddToggle(...)
+function Groupbox:AddListBox(name, opts)
+  opts = opts or {}
+  local values = opts.Values or {}
+  local multi = opts.Multi == true
+  local height = opts.Height or 100
+  local row = createControlFrame(self, nil, true, false)
+  Create.create("TextLabel", {
+    Parent = row, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
+    Text = opts.Text or name or "List", TextXAlignment = Enum.TextXAlignment.Left,
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text,
+  })
+  local scroll = Create.create("ScrollingFrame", {
+    Parent = row, Size = UDim2.new(1, 0, 0, height), BackgroundColor3 = Theme.PanelAlt,
+    BorderColor3 = Theme.Border, ScrollBarThickness = 6, ScrollBarImageColor3 = Theme.Scroll,
+    CanvasSize = UDim2.new(),
+  })
+  local layout = Create.create("UIListLayout", { Parent = scroll, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 1) })
+  local obj = BaseControl.new("ListBox", row, self.Window, name)
+  obj.Value = multi and (type(opts.Default) == "table" and opts.Default or {}) or opts.Default
+  obj.Values = values
+  obj.Multi = multi
+  obj.Changed = Signal.new()
+  local function rebuild()
+    for _, c in ipairs(scroll:GetChildren()) do
+      if c:IsA("TextButton") then c:Destroy() end
+    end
+    for i, val in ipairs(values) do
+      local selected = multi and table.find(obj.Value, val) or (obj.Value == val)
+      local item = Create.create("TextButton", {
+        Parent = scroll, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = i,
+        BackgroundTransparency = selected and 0 or 1, BackgroundColor3 = Theme.Selection,
+        Text = (selected and Glyphs.Check .. " " or "  ") .. tostring(val),
+        TextXAlignment = Enum.TextXAlignment.Left, Font = Theme.Font, TextSize = Theme.TextSize,
+        TextColor3 = Theme.Text, AutoButtonColor = false,
+      })
+      self.Window:Track(item.MouseButton1Click:Connect(function()
+        if obj.Disabled or obj.ReadOnly then return end
+        if multi then
+          local prev = table.clone(obj.Value)
+          local idx = table.find(obj.Value, val)
+          if idx then table.remove(obj.Value, idx) else table.insert(obj.Value, val) end
+          obj.Changed:Fire(obj.Value, prev)
+          if opts.Callback then pcall(opts.Callback, obj.Value, prev) end
+        else
+          local prev = obj.Value
+          obj.Value = val
+          obj.Changed:Fire(val, prev)
+          if opts.Callback then pcall(opts.Callback, val, prev) end
+        end
+        rebuild()
+      end))
+    end
+    scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+  end
+  rebuild()
+  function obj:SetValues(newVals)
+    values = newVals or {}
+    obj.Values = values
+    rebuild()
+  end
+  function obj:SetValue(v, silent)
+    obj.Value = v
+    rebuild()
+    if not silent then obj.Changed:Fire(v) end
+  end
+  function obj:GetValue() return obj.Value end
+  function obj:Destroy() BaseControl.Destroy(self) end
+  self.Window.Maid:Give(obj)
+  if name then self.Window.Registry:Register(name, obj, "Option") end
+  return obj
 end
 
-function Tab:AddSlider(...)
-  return self:GetDefaultGroupbox():AddSlider(...)
+function Groupbox:AddTree(name, opts)
+  opts = opts or {}
+  local nodes = opts.Nodes or {}
+  local height = opts.Height or 140
+  local row = createControlFrame(self, nil, true, false)
+  Create.create("TextLabel", {
+    Parent = row, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
+    Text = opts.Text or name or "Tree", TextXAlignment = Enum.TextXAlignment.Left,
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text,
+  })
+  local scroll = Create.create("ScrollingFrame", {
+    Parent = row, Size = UDim2.new(1, 0, 0, height), BackgroundColor3 = Theme.PanelAlt,
+    BorderColor3 = Theme.Border, ScrollBarThickness = 6, ScrollBarImageColor3 = Theme.Scroll,
+    CanvasSize = UDim2.new(),
+  })
+  local layout = Create.create("UIListLayout", { Parent = scroll, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 1) })
+  local obj = BaseControl.new("Tree", row, self.Window, name)
+  obj.Nodes = nodes
+  obj.Value = nil
+  obj.Changed = Signal.new()
+  local expanded = {}
+  local function rebuild(list, depth, order)
+    depth = depth or 0
+    order = order or { n = 0 }
+    for _, node in ipairs(list or {}) do
+      order.n += 1
+      local hasChildren = type(node.Children) == "table" and #node.Children > 0
+      local isExp = expanded[node] == true
+      local prefix = string.rep("  ", depth) .. (hasChildren and (isExp and Glyphs.ArrowDown or Glyphs.ArrowRight) or " ")
+      local item = Create.create("TextButton", {
+        Parent = scroll, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = order.n,
+        BackgroundTransparency = (obj.Value == node) and 0 or 1, BackgroundColor3 = Theme.Selection,
+        Text = prefix .. " " .. tostring(node.Text or node.Name or "?"),
+        TextXAlignment = Enum.TextXAlignment.Left, Font = Theme.Font, TextSize = Theme.TextSize,
+        TextColor3 = Theme.Text, AutoButtonColor = false,
+      })
+      self.Window:Track(item.MouseButton1Click:Connect(function()
+        if hasChildren then
+          expanded[node] = not isExp
+          for _, c in ipairs(scroll:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+          end
+          rebuild(nodes, 0, { n = 0 })
+          scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+        else
+          local prev = obj.Value
+          obj.Value = node
+          obj.Changed:Fire(node, prev)
+          if opts.Callback then pcall(opts.Callback, node, prev) end
+          for _, c in ipairs(scroll:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+          end
+          rebuild(nodes, 0, { n = 0 })
+          scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+        end
+      end))
+      if hasChildren and isExp then
+        rebuild(node.Children, depth + 1, order)
+      end
+    end
+  end
+  rebuild(nodes)
+  scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+  function obj:SetNodes(newNodes)
+    nodes = newNodes or {}
+    obj.Nodes = nodes
+    for _, c in ipairs(scroll:GetChildren()) do
+      if c:IsA("TextButton") then c:Destroy() end
+    end
+    rebuild(nodes)
+    scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+  end
+  function obj:AddNode(text, parentNode)
+    local node = { Text = text, Children = {} }
+    if parentNode and parentNode.Children then
+      table.insert(parentNode.Children, node)
+    else
+      table.insert(nodes, node)
+    end
+    obj:SetNodes(nodes)
+    return node
+  end
+  function obj:GetValue() return obj.Value end
+  function obj:Destroy() BaseControl.Destroy(self) end
+  self.Window.Maid:Give(obj)
+  if name then self.Window.Registry:Register(name, obj, "Option") end
+  return obj
 end
 
-function Tab:AddDropdown(...)
-  return self:GetDefaultGroupbox():AddDropdown(...)
+function Groupbox:AddTable(name, opts)
+  opts = opts or {}
+  local columns = opts.Columns or { "Col1", "Col2" }
+  local rows = opts.Rows or {}
+  local height = opts.Height or 120
+  local rowFrame = createControlFrame(self, nil, true, false)
+  Create.create("TextLabel", {
+    Parent = rowFrame, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
+    Text = opts.Text or name or "Table", TextXAlignment = Enum.TextXAlignment.Left,
+    Font = Theme.Font, TextSize = Theme.TextSize, TextColor3 = Theme.Text,
+  })
+  local header = Create.create("Frame", {
+    Parent = rowFrame, Size = UDim2.new(1, 0, 0, 18), BackgroundColor3 = Theme.PanelAlt, BorderSizePixel = 0,
+  })
+  local colW = 1 / math.max(#columns, 1)
+  for i, col in ipairs(columns) do
+    Create.create("TextLabel", {
+      Parent = header, Size = UDim2.new(colW, 0, 1, 0), Position = UDim2.new(colW * (i - 1), 0, 0, 0),
+      BackgroundTransparency = 1, Text = " " .. tostring(col), TextXAlignment = Enum.TextXAlignment.Left,
+      Font = Theme.Font, TextSize = 12, TextColor3 = Theme.Warning,
+    })
+  end
+  local scroll = Create.create("ScrollingFrame", {
+    Parent = rowFrame, Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, height),
+    BackgroundColor3 = Theme.Background, BorderColor3 = Theme.Border, ScrollBarThickness = 6,
+    ScrollBarImageColor3 = Theme.Scroll, CanvasSize = UDim2.new(),
+  })
+  local layout = Create.create("UIListLayout", { Parent = scroll, SortOrder = Enum.SortOrder.LayoutOrder })
+  local obj = BaseControl.new("Table", rowFrame, self.Window, name)
+  obj.Columns = columns
+  obj.Rows = rows
+  obj.Changed = Signal.new()
+  local function rebuild()
+    for _, c in ipairs(scroll:GetChildren()) do
+      if c:IsA("Frame") then c:Destroy() end
+    end
+    for ri, rowData in ipairs(rows) do
+      local r = Create.create("Frame", {
+        Parent = scroll, Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, LayoutOrder = ri,
+      })
+      for ci, col in ipairs(columns) do
+        local cell = rowData[col] or rowData[ci] or ""
+        Create.create("TextLabel", {
+          Parent = r, Size = UDim2.new(colW, 0, 1, 0), Position = UDim2.new(colW * (ci - 1), 0, 0, 0),
+          BackgroundTransparency = 1, Text = " " .. tostring(cell), TextXAlignment = Enum.TextXAlignment.Left,
+          Font = Theme.Font, TextSize = 12, TextColor3 = Theme.Text,
+        })
+      end
+    end
+    scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 4)
+  end
+  rebuild()
+  function obj:SetRows(newRows)
+    rows = newRows or {}
+    obj.Rows = rows
+    rebuild()
+  end
+  function obj:GetRows() return obj.Rows end
+  function obj:Destroy() BaseControl.Destroy(self) end
+  self.Window.Maid:Give(obj)
+  if name then self.Window.Registry:Register(name, obj, "Option") end
+  return obj
 end
 
-function Tab:AddInput(...)
-  return self:GetDefaultGroupbox():AddInput(...)
-end
-
-function Tab:AddKeyPicker(...)
-  return self:GetDefaultGroupbox():AddKeyPicker(...)
-end
-
-function Tab:AddDivider(...)
-  return self:GetDefaultGroupbox():AddDivider(...)
-end
+function Tab:AddLabel(...) return self:GetDefaultGroupbox():AddLabel(...) end
+function Tab:AddButton(...) return self:GetDefaultGroupbox():AddButton(...) end
+function Tab:AddToggle(...) return self:GetDefaultGroupbox():AddToggle(...) end
+function Tab:AddSlider(...) return self:GetDefaultGroupbox():AddSlider(...) end
+function Tab:AddDropdown(...) return self:GetDefaultGroupbox():AddDropdown(...) end
+function Tab:AddInput(...) return self:GetDefaultGroupbox():AddInput(...) end
+function Tab:AddKeyPicker(...) return self:GetDefaultGroupbox():AddKeyPicker(...) end
+function Tab:AddDivider(...) return self:GetDefaultGroupbox():AddDivider(...) end
+function Tab:AddColorPicker(...) return self:GetDefaultGroupbox():AddColorPicker(...) end
+function Tab:AddNumericInput(...) return self:GetDefaultGroupbox():AddNumericInput(...) end
+function Tab:AddListBox(...) return self:GetDefaultGroupbox():AddListBox(...) end
+function Tab:AddTree(...) return self:GetDefaultGroupbox():AddTree(...) end
+function Tab:AddTable(...) return self:GetDefaultGroupbox():AddTable(...) end
 
 -- ==================== COMMAND REGISTRY ====================
 
@@ -2523,7 +3102,7 @@ function X64UI:ExecuteCommand(name, ...)
   end, traceback)
 
   if not ok then
-    warn("[X64UI] Command failed:\n" .. tostring(result))
+    Log.warn("Command failed:\n" .. tostring(result))
     return false, result
   end
 
@@ -2535,8 +3114,8 @@ end
 function X64UI:CreateWindow(options)
   options = options or {}
 
-  if self.CurrentWindow and not self.CurrentWindow.Destroyed then
-    self.CurrentWindow:Destroy()
+  if options.SingleInstance ~= false and self.ActiveWindow and not self.ActiveWindow.Destroyed then
+    self.ActiveWindow:Destroy()
   end
 
   local win = setmetatable({}, Window)
@@ -2556,6 +3135,7 @@ function X64UI:CreateWindow(options)
   win.Maid:Give(win.Events.Destroying)
 
   win.History = History.new(150)
+  win.Registry = Registry.new()
 
   win.State = {
     Visible = State.new(true),
@@ -2572,8 +3152,6 @@ function X64UI:CreateWindow(options)
   win.Tabs = {}
   win.TabOrder = {}
   win.Dropdowns = {}
-  win.Options = {}
-  win.Toggles = {}
   win.Lines = {}
 
   win.Title = options.Title or "x64dbg UI"
@@ -2591,7 +3169,7 @@ function X64UI:CreateWindow(options)
   local width = options.Width or 1020
   local height = options.Height or 660
 
-  win.Gui = create("ScreenGui", {
+  win.Gui = Create.create("ScreenGui", {
     Name = options.Name or "X64UI",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
@@ -2600,9 +3178,7 @@ function X64UI:CreateWindow(options)
     Parent = getParent(),
   })
 
-  -- Frame instead of CanvasGroup to prevent resolution blur when maximized.
-  -- CanvasGroup has a 1024x1024 internal texture limit in the Roblox engine.
-  win.Main = create("Frame", {
+  win.Main = Create.create("Frame", {
     Parent = win.Gui,
     Name = "MainWindow",
     AnchorPoint = Vector2.zero,
@@ -2616,14 +3192,14 @@ function X64UI:CreateWindow(options)
     BorderSizePixel = 1,
   })
 
-  win.TitleBar = create("Frame", {
+  win.TitleBar = Create.create("Frame", {
     Parent = win.Main,
     Size = UDim2.new(1, 0, 0, 24),
     BackgroundColor3 = Theme.TitleBar,
     BorderSizePixel = 0,
   })
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = win.TitleBar,
     Position = UDim2.fromOffset(8, 0),
     Size = UDim2.new(1, -100, 1, 0),
@@ -2635,25 +3211,25 @@ function X64UI:CreateWindow(options)
     TextColor3 = Theme.Text,
   })
 
-  win.MinButton = create("TextButton", {
+  win.MinButton = Create.create("TextButton", {
     Parent = win.TitleBar,
     Position = UDim2.new(1, -60, 0, 2),
     Size = UDim2.fromOffset(28, 20),
     BackgroundColor3 = Theme.TitleBar,
     BorderSizePixel = 0,
-    Text = "—",
+    Text = Glyphs.Minimize,
     Font = Theme.Font,
     TextSize = 13,
     TextColor3 = Theme.Text,
   })
 
-  win.CloseButton = create("TextButton", {
+  win.CloseButton = Create.create("TextButton", {
     Parent = win.TitleBar,
     Position = UDim2.new(1, -30, 0, 2),
     Size = UDim2.fromOffset(28, 20),
     BackgroundColor3 = Theme.TitleBar,
     BorderSizePixel = 0,
-    Text = "X",
+    Text = Glyphs.Close,
     Font = Theme.Font,
     TextSize = 13,
     TextColor3 = Theme.Text,
@@ -2698,7 +3274,7 @@ function X64UI:CreateWindow(options)
     end
   end))
 
-  win.TabBar = create("ScrollingFrame", {
+  win.TabBar = Create.create("ScrollingFrame", {
     Parent = win.Main,
     Position = UDim2.fromOffset(0, 24),
     Size = UDim2.new(1, 0, 0, 26),
@@ -2709,7 +3285,7 @@ function X64UI:CreateWindow(options)
     CanvasSize = UDim2.new(),
   })
 
-  local tabLayout = create("UIListLayout", {
+  local tabLayout = Create.create("UIListLayout", {
     Parent = win.TabBar,
     FillDirection = Enum.FillDirection.Horizontal,
     SortOrder = Enum.SortOrder.LayoutOrder,
@@ -2720,7 +3296,7 @@ function X64UI:CreateWindow(options)
     win.TabBar.CanvasSize = UDim2.fromOffset(tabLayout.AbsoluteContentSize.X + 8, 0)
   end))
 
-  win.Pages = create("Frame", {
+  win.Pages = Create.create("Frame", {
     Parent = win.Main,
     Position = UDim2.fromOffset(4, win.TopOffset),
     Size = UDim2.new(1, -8, 1, -(win.TopOffset + 160 + 22 + 8)),
@@ -2729,21 +3305,21 @@ function X64UI:CreateWindow(options)
     BorderSizePixel = 1,
   })
 
-  win.Console = create("Frame", {
+  win.Console = Create.create("Frame", {
     Parent = win.Main,
     Visible = win.ConsoleVisible,
     BackgroundColor3 = Theme.Panel,
     BorderColor3 = Theme.Border,
   })
 
-  local consoleHeader = create("Frame", {
+  local consoleHeader = Create.create("Frame", {
     Parent = win.Console,
     Size = UDim2.new(1, 0, 0, 20),
     BackgroundColor3 = Theme.PanelAlt,
     BorderSizePixel = 0,
   })
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = consoleHeader,
     Position = UDim2.fromOffset(6, 0),
     Size = UDim2.new(1, -110, 1, 0),
@@ -2755,7 +3331,7 @@ function X64UI:CreateWindow(options)
     TextColor3 = Theme.Warning,
   })
 
-  local clearButton = create("TextButton", {
+  local clearButton = Create.create("TextButton", {
     Parent = consoleHeader,
     Position = UDim2.new(1, -56, 0, 0),
     Size = UDim2.fromOffset(56, 20),
@@ -2771,7 +3347,7 @@ function X64UI:CreateWindow(options)
     win:ClearLog()
   end))
 
-  win.LogScroll = create("ScrollingFrame", {
+  win.LogScroll = Create.create("ScrollingFrame", {
     Parent = win.Console,
     Position = UDim2.fromOffset(0, 20),
     Size = UDim2.new(1, 0, 1, -20),
@@ -2782,7 +3358,7 @@ function X64UI:CreateWindow(options)
     CanvasSize = UDim2.new(),
   })
 
-  win.LogLabel = create("TextLabel", {
+  win.LogLabel = Create.create("TextLabel", {
     Parent = win.LogScroll,
     Size = UDim2.new(1, 0, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y,
@@ -2796,7 +3372,7 @@ function X64UI:CreateWindow(options)
     TextColor3 = Theme.Text,
   })
 
-  create("UIPadding", {
+  Create.create("UIPadding", {
     Parent = win.LogScroll,
     PaddingTop = UDim.new(0, 4),
     PaddingLeft = UDim.new(0, 4),
@@ -2804,7 +3380,7 @@ function X64UI:CreateWindow(options)
     PaddingBottom = UDim.new(0, 4),
   })
 
-  win.StatusBar = create("Frame", {
+  win.StatusBar = Create.create("Frame", {
     Parent = win.Main,
     Position = UDim2.new(0, 0, 1, -22),
     Size = UDim2.new(1, 0, 0, 22),
@@ -2812,7 +3388,7 @@ function X64UI:CreateWindow(options)
     BorderSizePixel = 0,
   })
 
-  win.StatusLabel = create("TextLabel", {
+  win.StatusLabel = Create.create("TextLabel", {
     Parent = win.StatusBar,
     Position = UDim2.fromOffset(8, 0),
     Size = UDim2.new(0.6, -16, 1, 0),
@@ -2824,7 +3400,7 @@ function X64UI:CreateWindow(options)
     TextColor3 = Theme.Text,
   })
 
-  win.StatusRight = create("TextLabel", {
+  win.StatusRight = Create.create("TextLabel", {
     Parent = win.StatusBar,
     Position = UDim2.new(0.6, 0, 0, 0),
     Size = UDim2.new(0.4, -8, 1, 0),
@@ -2836,12 +3412,12 @@ function X64UI:CreateWindow(options)
     TextColor3 = Theme.Dim,
   })
 
-  win.Grip = create("TextButton", {
+  win.Grip = Create.create("TextButton", {
     Parent = win.Main,
     Position = UDim2.new(1, -14, 1, -14),
     Size = UDim2.fromOffset(14, 14),
     BackgroundTransparency = 1,
-    Text = "◢",
+    Text = Glyphs.Grip,
     Font = Theme.Font,
     TextSize = 12,
     TextColor3 = Theme.Dim,
@@ -2972,7 +3548,8 @@ function X64UI:CreateWindow(options)
   win:UpdateLayout()
   win:PlayIntro()
 
-  X64UI.CurrentWindow = win
+  table.insert(self.Windows, win)
+  self.ActiveWindow = win
   return win
 end
 
@@ -2983,11 +3560,11 @@ function X64UI:Notify(opts)
 
   local parent
 
-  if self.CurrentWindow and not self.CurrentWindow.Destroyed and self.CurrentWindow.Gui and self.CurrentWindow.Gui.Parent then
-    parent = self.CurrentWindow.Gui
+  if self.ActiveWindow and not self.ActiveWindow.Destroyed and self.ActiveWindow.Gui and self.ActiveWindow.Gui.Parent then
+    parent = self.ActiveWindow.Gui
   else
     if not self.NotifyGui or not self.NotifyGui.Parent then
-      self.NotifyGui = create("ScreenGui", {
+      self.NotifyGui = Create.create("ScreenGui", {
         Name = "X64Notify",
         ResetOnSpawn = false,
         IgnoreGuiInset = true,
@@ -3002,7 +3579,7 @@ function X64UI:Notify(opts)
   local container = parent:FindFirstChild("X64Notifications")
 
   if not container then
-    container = create("Frame", {
+    container = Create.create("Frame", {
       Parent = parent,
       Name = "X64Notifications",
       AnchorPoint = Vector2.new(1, 1),
@@ -3013,7 +3590,7 @@ function X64UI:Notify(opts)
       ZIndex = 10000,
     })
 
-    create("UIListLayout", {
+    Create.create("UIListLayout", {
       Parent = container,
       Padding = UDim.new(0, 8),
       SortOrder = Enum.SortOrder.LayoutOrder,
@@ -3022,7 +3599,13 @@ function X64UI:Notify(opts)
     })
   end
 
-  local toast = create("CanvasGroup", {
+  while #container:GetChildren() > 6 do
+    local child = container:GetChildren()[2]
+    if child then child:Destroy() end
+  end
+
+  local toastMaid = Maid.new()
+  local toast = Create.create("CanvasGroup", {
     Parent = container,
     Size = UDim2.new(1, 0, 0, 58),
     BackgroundColor3 = Theme.Panel,
@@ -3032,7 +3615,9 @@ function X64UI:Notify(opts)
     ZIndex = 10001,
   })
 
-  create("TextLabel", {
+  toastMaid:Give(toast)
+
+  Create.create("TextLabel", {
     Parent = toast,
     Position = UDim2.fromOffset(8, 4),
     Size = UDim2.new(1, -16, 0, 18),
@@ -3045,7 +3630,7 @@ function X64UI:Notify(opts)
     ZIndex = 10002,
   })
 
-  create("TextLabel", {
+  Create.create("TextLabel", {
     Parent = toast,
     Position = UDim2.fromOffset(8, 24),
     Size = UDim2.new(1, -16, 0, 28),
@@ -3066,7 +3651,7 @@ function X64UI:Notify(opts)
     { GroupTransparency = 0 }
   ):Play()
 
-  task.delay(opts.Time or 3, function()
+  local hideThread = task.delay(opts.Time or 3, function()
     if toast and toast.Parent then
       local tween = TweenService:Create(
         toast,
@@ -3077,10 +3662,12 @@ function X64UI:Notify(opts)
       tween:Play()
 
       tween.Completed:Connect(function()
-        toast:Destroy()
+        toastMaid:Destroy()
       end)
     end
   end)
+  
+  toastMaid:Give(hideThread)
 end
 
 -- Global export for other scripts to pick up.
