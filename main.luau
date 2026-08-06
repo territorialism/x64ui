@@ -1,9 +1,8 @@
 --[[
   X64UI main bootstrap
-  temporarily loads the full 5.2.0 build (menu bar + toolbar always on)
-  until the library file is restored on this branch
+  loads full 5.2.0 source (always-on menu bar + toolbar + integrity checks)
 ]]
-local URL = "https://termbin.com/2dhc1"
+local URL = "https://termbin.com/54wzm"
 
 local function httpGet(url)
   if type(request) == "function" then
@@ -22,19 +21,50 @@ end
 
 local source = httpGet(URL)
 if not source then
-  warn("[X64UI] failed to fetch library source")
-  return nil
+  warn("[X64UI] failed to fetch library source from " .. tostring(URL))
+  return {
+    CreateWindow = function()
+      warn("[X64UI] library source missing — cannot create window")
+      return nil
+    end,
+    Notify = function()
+      warn("[X64UI] library source missing — notify unavailable")
+    end,
+    Version = "bootstrap-failed",
+    _IntegrityError = "library source fetch failed",
+  }
 end
 
 local fn, err = loadstring(source)
 if not fn then
   warn("[X64UI] compile failed: " .. tostring(err))
-  return nil
+  return {
+    CreateWindow = function()
+      warn("[X64UI] compile failed — cannot create window: " .. tostring(err))
+      return nil
+    end,
+    Notify = function() end,
+    Version = "bootstrap-compile-failed",
+    _IntegrityError = "compile failed: " .. tostring(err),
+  }
 end
 
 local ok, lib = pcall(fn)
 if not ok then
   warn("[X64UI] runtime error: " .. tostring(lib))
+  return {
+    CreateWindow = function()
+      warn("[X64UI] runtime error — cannot create window: " .. tostring(lib))
+      return nil
+    end,
+    Notify = function() end,
+    Version = "bootstrap-runtime-failed",
+    _IntegrityError = "runtime error: " .. tostring(lib),
+  }
+end
+
+if type(lib) ~= "table" then
+  warn("[X64UI] library did not return a table")
   return nil
 end
 
