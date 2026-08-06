@@ -1,8 +1,8 @@
 --[[
   X64UI main bootstrap
-  loads full 5.2.3 source (viewport / corner clamp fix)
+  loads full 5.2.4 source (drag snap fix)
 ]]
-local URL = "https://termbin.com/5poe"
+local URL = "https://termbin.com/ktocy"
 
 local function httpGet(url)
   if type(request) == "function" then
