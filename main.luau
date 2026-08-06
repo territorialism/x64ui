@@ -1,19 +1,12 @@
 --[[
   X64UI main entry
-  assembles in-repo source parts only (no paste hosts)
+  Loads the full library from this same repository only.
+  No paste hosts. No missing part files.
 ]]
-local BASE = "https://raw.githubusercontent.com/territorialism/x64ui/main/"
-local PARTS = {
-  "src/part1a.luau",
-  "src/part1b.luau",
-  "src/part2a.luau",
-  "src/part2b.luau",
-  "src/part3a.luau",
-  "src/part3b.luau",
-  "src/part4a.luau",
-  "src/part4b.luau",
-  "src/part5.luau"
-}
+
+-- Full library blob committed in this repo (historical single-file main).
+-- Replace this entry with the latest single-file main.luau when you push it.
+local URL = "https://raw.githubusercontent.com/territorialism/x64ui/de759a5dba77c81fdb11e6cb5749e5acdb4a3ab0/main.luau"
 
 local function httpGet(url)
   if type(request) == "function" then
@@ -30,26 +23,21 @@ local function httpGet(url)
   return nil
 end
 
-local source = table.create(#PARTS)
-for i, path in ipairs(PARTS) do
-  local body = httpGet(BASE .. path)
-  if not body then
-    warn("[X64UI] failed to fetch " .. path)
-    return {
-      CreateWindow = function()
-        warn("[X64UI] incomplete source — missing " .. path)
-        return nil
-      end,
-      Notify = function() end,
-      Version = "assemble-failed",
-      _IntegrityError = "missing source part: " .. path,
-    }
-  end
-  source[i] = body
+local source = httpGet(URL)
+if not source then
+  warn("[X64UI] failed to fetch library from repository")
+  return {
+    CreateWindow = function()
+      warn("[X64UI] library source missing")
+      return nil
+    end,
+    Notify = function() end,
+    Version = "fetch-failed",
+    _IntegrityError = "library source fetch failed",
+  }
 end
 
-local code = table.concat(source)
-local fn, err = loadstring(code)
+local fn, err = loadstring(source)
 if not fn then
   warn("[X64UI] compile failed: " .. tostring(err))
   return {
