@@ -10,7 +10,7 @@ desktop only. i made this for myself and figured other people might find it usef
 local X64UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
 ```
 
-The loader handles executor-specific HTTP wrappers automatically (`syn.request`, `http.request`, `http_request`, `request`, Fluxus) and falls back to `game:HttpGet`. After a successful load it exports the library to `getgenv().X64UI` (or `shared.X64UI`) so other scripts in the same executor can access it.
+The loader uses the sUNC-standard `request` global when available, otherwise falls back to `game:HttpGet`. After a successful load it exports the library to `getgenv().X64UI` (or `shared.X64UI`) so other scripts in the same session can access it.
 
 ## Quick Start
 
@@ -329,11 +329,9 @@ X64UI.Theme.Accent = Color3.fromRGB(255, 0, 128)
 - **Viewport clamping** — window stays on screen
 - **No CanvasGroup on main window** — avoids 1024×1024 texture blur when maximized
 
-## Executor Compatibility
+## Compatibility
 
-Works on Luau executors with basic HTTP. Loader auto-detects common request APIs and falls back to `game:HttpGet`.
-
-If `writefile` / `readfile` are missing, config save/load logs and skips.
+Requires a Luau environment with either the sUNC-standard `request` global or `game:HttpGet`. File APIs (`writefile` / `readfile`) are optional; config save/load logs and skips if they are missing.
 
 ## Known Limitations
 

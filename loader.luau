@@ -1,22 +1,13 @@
 --[[
   X64UI Loader
-  - Executor HTTP wrapper chain (syn.request, http.request, http_request, request, fluxus)
-  - Safe body extraction + loadstring error capture
-  - Exports to getgenv().X64UI / shared.X64UI after load
+  Uses sUNC-standard globals (request, getgenv) with game:HttpGet fallback.
 ]]
 
 local LIBRARY_URL = "https://raw.githubusercontent.com/territorialism/x64ui/main/main.luau"
 
 local function httpGet(url)
-  local requestFn =
-    (syn and syn.request)
-    or (http and http.request)
-    or http_request
-    or request
-    or (fluxus and fluxus.request)
-
-  if requestFn then
-    local ok, res = pcall(requestFn, {
+  if type(request) == "function" then
+    local ok, res = pcall(request, {
       Url = url,
       Method = "GET",
     })
@@ -74,9 +65,9 @@ if type(X64UI) ~= "table" then
   return nil
 end
 
-if getgenv then
+if type(getgenv) == "function" then
   getgenv().X64UI = X64UI
-elseif shared then
+elseif type(shared) == "table" then
   shared.X64UI = X64UI
 end
 
