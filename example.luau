@@ -1,9 +1,7 @@
 --[[
-  X64UI Example Script
+  X64UI Example Script (v5.1 API)
 
-  Load the library first using loader.luau, then run this.
-  If you're combining everything into one script, just paste the
-  loader and library above this block.
+  Load via loader.luau first, or paste loader + main above this block.
 ]]
 
 local X64UI = (getgenv and getgenv().X64UI)
@@ -14,25 +12,24 @@ if not X64UI then
   return
 end
 
--- ==================== WINDOW ====================
-
 local window = X64UI:CreateWindow({
   Title = "My Game Hub",
   Width = 1020,
   Height = 660,
+  SingleInstance = true,
 })
 
 local main = window:AddTab("Main")
 local left = main:AddLeftGroupbox("Combat")
 local right = main:AddRightGroupbox("Settings")
 
--- ==================== CONTROLS ====================
+-- ==================== BASIC CONTROLS ====================
 
 left:AddToggle("Aimbot", {
   Text = "Enable Aimbot",
   Default = false,
-  Callback = function(value)
-    print("Aimbot:", value)
+  Callback = function(newValue, oldValue)
+    print("Aimbot:", oldValue, "->", newValue)
   end,
 })
 
@@ -42,8 +39,8 @@ left:AddSlider("FOV", {
   Max = 500,
   Default = 150,
   Rounding = 0,
-  Callback = function(value)
-    print("FOV:", value)
+  Callback = function(newValue, oldValue)
+    print("FOV:", oldValue, "->", newValue)
   end,
 })
 
@@ -51,32 +48,74 @@ left:AddDropdown("TargetPart", {
   Text = "Target Part",
   Values = { "Head", "Torso", "HumanoidRootPart" },
   Default = "Head",
-  Callback = function(value)
-    print("Target Part:", value)
+  Callback = function(newValue, oldValue)
+    print("Target Part:", oldValue, "->", newValue)
+  end,
+})
+
+left:AddDropdown("Weapons", {
+  Text = "Weapons (multi + searchable)",
+  Values = { "Rifle", "SMG", "Pistol", "Shotgun", "Sniper", "Melee", "Grenade" },
+  Multi = true,
+  Searchable = true,
+  Default = {},
+  Callback = function(newValue, oldValue)
+    print("Weapons selected:", #newValue)
   end,
 })
 
 left:AddInput("Note", {
   Text = "Note",
   Placeholder = "Write something here...",
-  Callback = function(value)
-    print("Note:", value)
+  Callback = function(newValue, oldValue)
+    print("Note:", oldValue, "->", newValue)
+  end,
+})
+
+-- ==================== PHASE 5 CONTROLS ====================
+
+right:AddColorPicker("ESPColor", {
+  Text = "ESP Color",
+  Default = Color3.fromRGB(0, 122, 204),
+  Callback = function(newColor, oldColor)
+    print("ESP Color changed")
+  end,
+})
+
+right:AddNumericInput("MaxDistance", {
+  Text = "Max Distance",
+  Min = 0,
+  Max = 2000,
+  Default = 500,
+  Callback = function(newValue, oldValue)
+    print("MaxDistance:", oldValue, "->", newValue)
+  end,
+})
+
+right:AddListBox("Priority", {
+  Text = "Priority List",
+  Values = { "Closest", "Lowest HP", "Highest Threat" },
+  Multi = false,
+  Height = 80,
+  Callback = function(newValue, oldValue)
+    print("Priority:", newValue)
   end,
 })
 
 right:AddKeyPicker("MenuKey", {
   Text = "Menu Toggle Key",
   Default = "RightShift",
-  Callback = function(value)
+  Callback = function(newValue, oldValue)
     local ok, keyCode = pcall(function()
-      return Enum.KeyCode[value]
+      return Enum.KeyCode[newValue]
     end)
-
     if ok then
       X64UI.MenuKeybind = keyCode
     end
   end,
 })
+
+right:AddDivider()
 
 right:AddButton({
   Text = "Save Config",
@@ -88,7 +127,32 @@ right:AddButton({
 right:AddButton({
   Text = "Load Config",
   Callback = function()
-    window:LoadConfig("mygame_config.json")
+    window:LoadConfig("mygame_config.json", {
+      Silent = false,
+      FireCallbacks = false,
+      RecordHistory = false,
+      ApplyLayout = true,
+    })
+  end,
+})
+
+right:AddButton({
+  Text = "Show Dialog",
+  Callback = function()
+    if X64UI.Dialog then
+      X64UI:Dialog({
+        Title = "Confirm",
+        Message = "This is a modal dialog example.",
+      })
+    elseif window.ShowModal then
+      window:ShowModal({
+        Title = "Confirm",
+        Message = "This is a modal dialog example.",
+        Callback = function(ok)
+          print("Dialog result:", ok)
+        end,
+      })
+    end
   end,
 })
 
