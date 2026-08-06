@@ -1,8 +1,8 @@
 --[[
   X64UI main bootstrap
-  loads full 5.2.0 source (always-on menu bar + toolbar + integrity checks)
+  loads full 5.2.1 source (dropdown + Obsidian HSV fixes)
 ]]
-local URL = "https://termbin.com/54wzm"
+local URL = "https://termbin.com/3gifd"
 
 local function httpGet(url)
   if type(request) == "function" then
