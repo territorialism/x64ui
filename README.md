@@ -1,18 +1,18 @@
-# X64UI
+# x64ui
 
 x64dbg-inspired ui library for scripts built entirely with native gui instances
 
 desktop only. i made this for myself and figured other people might find it useful
 
-## Loadstring
+## loadstring
 
 ```lua
 local X64UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
 ```
 
-The loader uses the sUNC-standard `request` global when available, otherwise falls back to `game:HttpGet`. After a successful load it exports the library to `getgenv().X64UI` (or `shared.X64UI`) so other scripts in the same session can access it.
+the loader uses the sunc-standard `request` global when available, otherwise falls back to `game:HttpGet`. after a successful load it exports the library to `getgenv().X64UI` (or `shared.X64UI`) so other scripts in the same session can access it.
 
-## Quick Start
+## quick start
 
 ```lua
 local X64UI = loadstring(game:HttpGet("https://raw.githubusercontent.com/territorialism/x64ui/main/loader.luau"))()
@@ -56,20 +56,20 @@ left:AddDropdown("Part", {
 })
 ```
 
-## Controls
+## controls
 
-Every tab splits into a left and right column. Add groupboxes to either side, then fill them with controls.
+every tab splits into a left and right column. add groupboxes to either side, then fill them with controls.
 
-Callbacks for value controls receive `(newValue, oldValue)`. Buttons receive no args.
+callbacks for value controls receive `(newValue, oldValue)`. buttons receive no args.
 
-### Labels
+### labels
 
 ```lua
 group:AddLabel("Some descriptive text")
 group:AddLabel("Wrapped text that can span multiple lines.", true)
 ```
 
-### Buttons
+### buttons
 
 ```lua
 group:AddButton({
@@ -80,7 +80,7 @@ group:AddButton({
 })
 ```
 
-### Toggles
+### toggles
 
 ```lua
 local toggle = group:AddToggle("MyToggle", {
@@ -96,7 +96,7 @@ toggle:SetDisabled(false)
 toggle:SetReadOnly(false)
 ```
 
-### Sliders
+### sliders
 
 ```lua
 local slider = group:AddSlider("MySlider", {
@@ -112,9 +112,9 @@ slider:SetValue(75)
 slider:GetValue()
 ```
 
-### Dropdowns
+### dropdowns
 
-Supports single-select, multi-select, and searchable lists.
+supports single-select, multi-select, and searchable lists.
 
 ```lua
 local dropdown = group:AddDropdown("MyDropdown", {
@@ -137,7 +137,7 @@ group:AddDropdown("Weapons", {
 })
 ```
 
-### Text Inputs
+### text inputs
 
 ```lua
 local input = group:AddInput("MyInput", {
@@ -148,7 +148,7 @@ local input = group:AddInput("MyInput", {
 })
 ```
 
-### Key Pickers
+### key pickers
 
 ```lua
 local keybind = group:AddKeyPicker("MyKey", {
@@ -158,7 +158,7 @@ local keybind = group:AddKeyPicker("MyKey", {
 })
 ```
 
-### Color Picker
+### color picker
 
 ```lua
 group:AddColorPicker("ESPColor", {
@@ -168,7 +168,7 @@ group:AddColorPicker("ESPColor", {
 })
 ```
 
-### Numeric Input
+### numeric input
 
 ```lua
 group:AddNumericInput("MaxDist", {
@@ -180,7 +180,7 @@ group:AddNumericInput("MaxDist", {
 })
 ```
 
-### List Box
+### list box
 
 ```lua
 group:AddListBox("Priority", {
@@ -192,7 +192,7 @@ group:AddListBox("Priority", {
 })
 ```
 
-### Table / Tree
+### table / tree
 
 ```lua
 group:AddTable("Scores", {
@@ -217,13 +217,13 @@ group:AddTree("Hierarchy", {
 })
 ```
 
-### Dividers
+### dividers
 
 ```lua
 group:AddDivider()
 ```
 
-## Window Methods
+## window methods
 
 ```lua
 window:Log("Message to console")
@@ -248,9 +248,9 @@ window:SetMaximized(true)
 
 `CreateWindow({ SingleInstance = false })` allows multiple windows at once.
 
-## Command Palette
+## command palette
 
-Press `Ctrl+P` to open the command palette. Type to search, arrow keys to navigate, Enter to execute.
+press `Ctrl+P` to open the command palette. type to search, arrow keys to navigate, enter to execute.
 
 ```lua
 X64UI:RegisterCommand("Teleport", {
@@ -262,7 +262,7 @@ X64UI:RegisterCommand("Teleport", {
 })
 ```
 
-## Notifications
+## notifications
 
 ```lua
 X64UI:Notify({
@@ -272,9 +272,9 @@ X64UI:Notify({
 })
 ```
 
-Visible notifications are capped; older ones are removed first.
+visible notifications are capped; older ones are removed first.
 
-## Dialogs
+## dialogs
 
 ```lua
 X64UI:Dialog({
@@ -284,18 +284,18 @@ X64UI:Dialog({
 -- or window:ShowModal({ Title, Message, ConfirmText, CancelText, Callback })
 ```
 
-## Hotkeys
+## hotkeys
 
-| Key | Action |
+| key | action |
 |-----|--------|
-| `RightShift` | Toggle window visibility (change with `X64UI.MenuKeybind`) |
-| `Ctrl+P` | Open/close command palette |
-| Double-click title bar | Maximize / restore |
-| Esc | Close open dropdown / command palette / cancel key capture |
+| `RightShift` | toggle window visibility (change with `X64UI.MenuKeybind`) |
+| `Ctrl+P` | open/close command palette |
+| double-click title bar | maximize / restore |
+| esc | close open dropdown / command palette / cancel key capture |
 
-## Config System
+## config system
 
-`window:SaveConfig(path)` writes named toggles/options (and layout) via the executor filesystem (`Platform` wrappers).
+`window:SaveConfig(path)` writes named toggles/options (and layout) via the filesystem (`Platform` wrappers).
 
 `window:LoadConfig(path, opts)` supports:
 
@@ -304,42 +304,42 @@ X64UI:Dialog({
 - `RecordHistory` — wrap apply in a history transaction
 - `ApplyLayout` — restore size/position
 
-## Undo / Redo
+## undo / redo
 
-Tracked via `window.History:UndoLast()` / `RedoLast()`. Transactions (`BeginTransaction` / `EndTransaction`) group multiple changes.
+tracked via `window.History:UndoLast()` / `RedoLast()`. transactions (`BeginTransaction` / `EndTransaction`) group multiple changes.
 
-## Theme
+## theme
 
-Override before `CreateWindow`:
+override before `CreateWindow`:
 
 ```lua
 X64UI.Theme.Background = Color3.fromRGB(10, 10, 10)
 X64UI.Theme.Accent = Color3.fromRGB(255, 0, 128)
 ```
 
-## Architecture
+## architecture
 
-- **Registry** — per-window control registry (no global Options/Toggles pollution)
-- **Signal bus** — custom event system
-- **Maid cleanup** — connections, instances, tasks destroyed together
-- **Observable state** — State objects with change signals
-- **History stack** — undo/redo with optional transactions
-- **Platform** — file ops go through Platform wrappers
-- **Glyphs** — safe unicode for check/arrow/grip
-- **Viewport clamping** — window stays on screen
-- **No CanvasGroup on main window** — avoids 1024×1024 texture blur when maximized
+- **registry** — per-window control registry (no global options/toggles pollution)
+- **signal bus** — custom event system
+- **maid cleanup** — connections, instances, tasks destroyed together
+- **observable state** — state objects with change signals
+- **history stack** — undo/redo with optional transactions
+- **platform** — file ops go through platform wrappers
+- **glyphs** — safe unicode for check/arrow/grip
+- **viewport clamping** — window stays on screen
+- **no canvasgroup on main window** — avoids 1024×1024 texture blur when maximized
 
-## Compatibility
+## compatibility
 
-Requires a Luau environment with either the sUNC-standard `request` global or `game:HttpGet`. File APIs (`writefile` / `readfile`) are optional; config save/load logs and skips if they are missing.
+requires a luau environment with either the sunc-standard `request` global or `game:HttpGet`. file apis (`writefile` / `readfile`) are optional; config save/load logs and skips if they are missing.
 
-## Known Limitations
+## known limitations
 
-- Desktop only. No touch/mobile support.
-- CanvasGroup used for notifications only (small, so texture limit is fine).
-- Dropdown lists parented to root ScreenGui so they render above content.
-- Command palette is simple substring search, not full multi-word fuzzy ranking.
+- desktop only. no touch/mobile support.
+- canvasgroup used for notifications only (small, so texture limit is fine).
+- dropdown lists parented to root screenGui so they render above content.
+- command palette is simple substring search, not full multi-word fuzzy ranking.
 
-## License
+## license
 
-MIT. Do whatever you want with it.
+mit. do whatever you want with it.
