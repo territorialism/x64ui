@@ -654,6 +654,50 @@ function InputManager:Cancel()
   end
 end
 
+-- Bind names: KeyCode.Name (RightShift, LeftControl, ...) or MouseButton1/2/3
+local function InputToBindName(input)
+  if not input then return nil end
+  local uit = input.UserInputType
+  if uit == Enum.UserInputType.Keyboard then
+    local kc = input.KeyCode
+    if not kc or kc == Enum.KeyCode.Unknown then
+      return nil
+    end
+    return kc.Name
+  end
+  if uit == Enum.UserInputType.MouseButton1 then return "MouseButton1" end
+  if uit == Enum.UserInputType.MouseButton2 then return "MouseButton2" end
+  if uit == Enum.UserInputType.MouseButton3 then return "MouseButton3" end
+  return nil
+end
+
+local function InputMatchesBind(input, bindName)
+  if not bindName or bindName == "" or bindName == "None" then
+    return false
+  end
+  local name = InputToBindName(input)
+  if not name then
+    return false
+  end
+  if name == bindName then
+    return true
+  end
+  -- aliases: Shift / Control / Alt match either side
+  if bindName == "Shift" and (name == "LeftShift" or name == "RightShift") then
+    return true
+  end
+  if bindName == "Control" and (name == "LeftControl" or name == "RightControl") then
+    return true
+  end
+  if bindName == "Alt" and (name == "LeftAlt" or name == "RightAlt") then
+    return true
+  end
+  if bindName == "MB1" and name == "MouseButton1" then return true end
+  if bindName == "MB2" and name == "MouseButton2" then return true end
+  if bindName == "MB3" and name == "MouseButton3" then return true end
+  return false
+end
+
 InputRouter:Connect()
 
 -- ==================== PHASE 5: UX (Tooltips & Modals) ====================
@@ -3188,9 +3232,7 @@ function Groupbox:AddKeyPicker(name, opts)
     if UserInputService:GetFocusedTextBox() then return end
     if self.Window.PickingKey then return end
     if obj.Value == "None" or obj.Value == "" then return end
-
-    local keyName = input.KeyCode and input.KeyCode.Name
-    if keyName ~= obj.Value then return end
+    if not InputMatchesBind(input, obj.Value) then return end
 
     if mode == "Toggle" then
       obj._State = not obj._State
@@ -3211,14 +3253,12 @@ function Groupbox:AddKeyPicker(name, opts)
   local function onKeyEnded(input)
     if mode ~= "Hold" then return end
     if not obj._Holding then return end
-    local keyName = input.KeyCode and input.KeyCode.Name
-    if keyName ~= obj.Value then return end
+    if not InputMatchesBind(input, obj.Value) then return end
     obj._Holding = false
     obj._State = false
     fireClick()
   end
 
-  -- library-level listeners via InputRouter
   if InputRouter then
     InputRouter:On("Began", onKeyBegan)
     InputRouter:On("Ended", onKeyEnded)
@@ -3230,35 +3270,32 @@ function Groupbox:AddKeyPicker(name, opts)
   if button then
     self.Window:Track(button.MouseButton1Click:Connect(function()
       if not obj:CanInteract() then return end
-      button.Text = "Press key..."
+      button.Text = "..."
       self.Window.PickingKey = true
-      InputManager:Capture(function(input)
-        if input.KeyCode == Enum.KeyCode.Escape then
-          set("None", false, true)
-        else
-          set(input.KeyCode.Name, false, true)
-        end
-        InputManager:Cancel()
-        self.Window.PickingKey = false
+
+      -- defer so the MouseButton1 that opened the picker is not captured as the bind
+      task.defer(function()
+        if obj.Destroyed or not self.Window.PickingKey then return end
+
+        InputManager:Capture(function(input)
+          local name = InputToBindName(input)
+          if not name then
+            return -- ignore movement / unknown
+          end
+
+          if name == "Escape" then
+            set("None", false, true)
+          else
+            set(name, false, true)
+          end
+
+          InputManager:Cancel()
+          self.Window.PickingKey = false
+          if button then
+            button.Text = obj.Value
+          end
+        end)
       end)
-    end))
-
-    self.Window:Track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
-      if not InputManager.Capturing or not InputManager.Callback then return end
-
-      if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        InputManager:Cancel()
-        button.Text = obj.Value
-        self.Window.PickingKey = false
-        return
-      end
-
-      if gameProcessed then return end
-      if UserInputService:GetFocusedTextBox() then return end
-
-      if input.UserInputType == Enum.UserInputType.Keyboard then
-        InputManager.Callback(input)
-      end
     end))
   end
 
@@ -4521,37 +4558,36 @@ function X64UI:CreateWindow(options)
   end))
 
   win:Track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+      if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+        win.CommandModifierDown = true
+      end
 
-    if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
-      win.CommandModifierDown = true
-    end
-
-    if (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl))
-      and input.KeyCode == Enum.KeyCode.P then
-      win:ToggleCommandPalette()
-      return
-    end
-
-    if win.PickingKey then return end
-    if gameProcessed then return end
-    if UserInputService:GetFocusedTextBox() then return end
-
-    local key = X64UI.MenuKeybind
-
-    if typeof(key) == "string" then
-      local ok, enumKey = pcall(function()
-        return Enum.KeyCode[key]
-      end)
-
-      if ok then
-        key = enumKey
-      else
+      if (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl))
+        and input.KeyCode == Enum.KeyCode.P then
+        win:ToggleCommandPalette()
         return
       end
     end
 
-    if input.KeyCode == key then
+    if win.PickingKey then return end
+    if InputManager and InputManager.Capturing then return end
+    if InputRouter and #InputRouter.CaptureStack > 0 then return end
+    if gameProcessed then return end
+    if UserInputService:GetFocusedTextBox() then return end
+
+    local key = X64UI.MenuKeybind
+    local matched = false
+
+    if typeof(key) == "EnumItem" then
+      if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == key then
+        matched = true
+      end
+    elseif typeof(key) == "string" then
+      matched = InputMatchesBind(input, key)
+    end
+
+    if matched then
       win:Toggle()
     end
   end))
