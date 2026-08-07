@@ -1,11 +1,11 @@
 --[[
 made by iris
 d = desktop
-0.0.2d
+5.1.0d
 ]]
 
 local X64UI = {
-  Version = "0.0.2-d",
+  Version = "5.5.1-desktop",
   MenuKeybind = Enum.KeyCode.RightShift,
   Windows = {},
   ActiveWindow = nil,
@@ -656,24 +656,6 @@ end
 
 InputRouter:Connect()
 
--- Library-wide FPS (single Heartbeat, not per-window RenderStepped)
-local LibraryFrames = 0
-local LibraryLastFPS = os.clock()
-local LibraryHeartbeatConn = RunService.Heartbeat:Connect(function()
-  LibraryFrames += 1
-  local now = os.clock()
-  if now - LibraryLastFPS >= 1 then
-    local fps = LibraryFrames
-    LibraryFrames = 0
-    LibraryLastFPS = now
-    for _, win in ipairs(X64UI.Windows) do
-      if win.StatusRight and win.StatusRight.Parent and not win.Destroyed then
-        win.StatusRight.Text = string.format("FPS: %d | %s", fps, os.date("%X"))
-      end
-    end
-  end
-end)
-
 -- ==================== PHASE 5: UX (Tooltips & Modals) ====================
 
 local TooltipGui, TooltipLabel
@@ -887,16 +869,10 @@ function BaseControl:SetDisabled(v)
   if self.Label then
     self.Label.TextColor3 = self.Disabled and Theme.Dim or Theme.Text
   end
-  if self.TextBox then
-    self.TextBox.TextEditable = not self.Disabled
-  end
 end
 
 function BaseControl:SetReadOnly(v)
   self.ReadOnly = v and true or false
-  if self.TextBox then
-    self.TextBox.TextEditable = not self.ReadOnly
-  end
 end
 
 function BaseControl:CanInteract()
@@ -1554,7 +1530,7 @@ function Window:SelectTab(name)
   local tab = self.Tabs[name]
   if not tab then return end
 
-  self:CloseAllPopups()
+  self:CloseDropdowns()
 
   if self.CommandPalette then
     self.CommandPalette.Visible = false
@@ -2438,7 +2414,6 @@ function Groupbox:AddToggle(name, opts)
   end
 
   local function toggle()
-    if not obj:CanInteract() then return end
     set(not state:Get(), false, true)
   end
 
@@ -2488,29 +2463,29 @@ function Groupbox:AddSlider(name, opts)
     BackgroundTransparency = 1,
   })
 
-  Create.create("UIListLayout", {
-    Parent = header,
-    FillDirection = Enum.FillDirection.Horizontal,
-    VerticalAlignment = Enum.VerticalAlignment.Center,
-  })
-
+  -- Label left, value right (no UIListLayout — scale-1 + list overlaps value into text)
   Create.create("TextLabel", {
     Parent = header,
-    Size = UDim2.new(1, -70, 1, 0),
+    Size = UDim2.new(1, -56, 1, 0),
+    Position = UDim2.fromOffset(0, 0),
     BackgroundTransparency = 1,
     Text = opts.Text or name or "Slider",
     TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Center,
     Font = Theme.Font,
     TextSize = Theme.TextSize,
     TextColor3 = Theme.Text,
+    TextTruncate = Enum.TextTruncate.AtEnd,
   })
 
   local valueLabel = Create.create("TextBox", {
     Parent = header,
-    Size = UDim2.fromOffset(70, 16),
+    Size = UDim2.fromOffset(52, 16),
+    Position = UDim2.new(1, -52, 0, 0),
     BackgroundTransparency = 1,
     Text = "",
     TextXAlignment = Enum.TextXAlignment.Right,
+    TextYAlignment = Enum.TextYAlignment.Center,
     Font = Theme.Font,
     TextSize = Theme.TextSize,
     TextColor3 = Theme.AccentText,
@@ -2983,13 +2958,6 @@ function Groupbox:AddDropdown(name, opts)
   if not opts.Multi then set(selected, true) end
   table.insert(self.Window.Dropdowns, obj)
 
-  self.Window:Track(button:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
-    if list.Visible then obj:RefreshPosition() end
-  end))
-  self.Window:Track(self.Window.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-    if list.Visible then obj:RefreshPosition() end
-  end))
-
   if name then
     self.Window.Registry:Register(name, obj, "Option")
   end
@@ -3088,7 +3056,6 @@ function Groupbox:AddInput(name, opts)
   end))
 
   self.Window:Track(box.FocusLost:Connect(function(_)
-    if not obj:CanInteract() then return end
     local newText = box.Text
 
     if newText ~= focusedValue then
@@ -3475,9 +3442,6 @@ function Groupbox:AddColorPicker(name, opts)
     local pos = preview.AbsolutePosition
     picker.Position = UDim2.fromOffset(pos.X, pos.Y + 22)
     picker.Visible = true
-    self.Window:RegisterPopup({
-      Close = function() closePicker() end,
-    })
   end
 
   local function closePicker()
@@ -4570,8 +4534,6 @@ function X64UI:CreateWindow(options)
     end
 
     if win.PickingKey then return end
-    if InputManager and InputManager.Capturing then return end
-    if InputRouter and #InputRouter.CaptureStack > 0 then return end
     if gameProcessed then return end
     if UserInputService:GetFocusedTextBox() then return end
 
@@ -4636,6 +4598,36 @@ function X64UI:CreateWindow(options)
         end
       end
     end)
+  end))
+
+  win:Track(RunService.RenderStepped:Connect(function()
+    if win.Destroyed then return end
+
+    for _, dropdown in ipairs(win.Dropdowns) do
+      if dropdown.List and dropdown.List.Visible then
+        if not win.Main.Visible or win.Minimized then
+          dropdown:Close()
+        else
+          dropdown:RefreshPosition()
+        end
+      end
+    end
+  end))
+
+  local frames = 0
+  local last = os.clock()
+
+  win:Track(RunService.RenderStepped:Connect(function()
+    frames += 1
+
+    if os.clock() - last >= 1 then
+      if win.StatusRight and win.StatusRight.Parent then
+        win.StatusRight.Text = string.format("FPS: %d | %s", frames, os.date("%X"))
+      end
+
+      frames = 0
+      last = os.clock()
+    end
   end))
 
   win:Track(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
@@ -5059,11 +5051,6 @@ end
 function X64UI:Unload()
   if self.Unloaded then return end
   self.Unloaded = true
-
-  if LibraryHeartbeatConn then
-    pcall(function() LibraryHeartbeatConn:Disconnect() end)
-    LibraryHeartbeatConn = nil
-  end
 
   if InputRouter and InputRouter.Disconnect then
     pcall(function() InputRouter:Disconnect() end)
