@@ -8,37 +8,59 @@ local function fetch(url)
 
   for _, client in ipairs(clients) do
     if type(client) == "function" then
-      local ok, res = pcall(client, { Url = url, Method = "GET" })
-      if ok and type(res) == "table" and (res.StatusCode == nil or res.StatusCode >= 200 and res.StatusCode < 300) and type(res.Body) == "string" and #res.Body > 0 then
-        return res.Body
+      local ok, res = pcall(client, {
+        Url = url,
+        Method = "GET",
+        Headers = {
+          ["Cache-Control"] = "no-cache",
+        },
+      })
+      if ok and type(res) == "table" then
+        local status = tonumber(res.StatusCode)
+        local body = res.Body
+        if (not status or status >= 200 and status < 300) and type(body) == "string" and #body > 0 then
+          return body
+        end
       end
     end
   end
 
-  local ok, res = pcall(function()
-    return game:HttpGet(url)
-  end)
-  if ok and type(res) == "string" and #res > 0 then
-    return res
+  if type(game) == "userdata" or type(game) == "table" then
+    local ok, res = pcall(function()
+      return game:HttpGet(url)
+    end)
+    if ok and type(res) == "string" and #res > 0 then
+      return res
+    end
   end
 end
 
 local function patchSource(source)
   local patched = 0
+  local required = 0
 
-  local function replace(old, new)
+  local function replace(old, new, requiredPatch)
+    if requiredPatch then
+      required += 1
+    end
+
     if string.find(source, new, 1, true) then
       return true
     end
-    if not string.find(source, old, 1, true) then
+
+    local start = string.find(source, old, 1, true)
+    if not start then
       return false
     end
+
     local pattern = string.gsub(old, "([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+    local changed = false
     source = string.gsub(source, pattern, function()
+      changed = true
       patched += 1
       return new
     end, 1)
-    return true
+    return changed
   end
 
   replace([[  local existing = (getgenv and getgenv().X64UI) or (shared and shared.X64UI)
@@ -48,7 +70,9 @@ local function patchSource(source)
   pcall(function()
     if type(getgenv) == "function" then
       local env = getgenv()
-      if type(env) == "table" then existing = env.X64UI end
+      if type(env) == "table" then
+        existing = env.X64UI
+      end
     end
   end)
   if not existing and type(shared) == "table" then
@@ -56,7 +80,7 @@ local function patchSource(source)
   end
   if type(existing) == "table" and type(existing.Unload) == "function" then
     pcall(function() existing:Unload() end)
-  end]])
+  end]], true)
 
   replace([[  if self._Firing then
     -- re-entrant: queue unbounded recursion
@@ -99,7 +123,7 @@ local function patchSource(source)
   end
   table.clear(self._Queue)
   self._QueueTail = 0
-  self._Firing = false]])
+  self._Firing = false]], true)
 
   replace([[  local ok, err = xpcall(fn, traceback)
   self:EndTransaction()
@@ -122,7 +146,7 @@ local function patchSource(source)
     return false
   end
   self:EndTransaction()
-  return true]])
+  return true]], true)
 
   replace([[  for _, listener in ipairs(self[phase]) do
     local ok, err = xpcall(listener, traceback, input, gameProcessed)
@@ -133,7 +157,7 @@ local function patchSource(source)
       local ok, err = xpcall(listener, traceback, input, gameProcessed)
       if not ok then Log.warn("InputRouter listener failed:\\n" .. tostring(err)) end
     end
-  end]])
+  end]], true)
 
   replace([[  self._began, self._changed, self._ended = nil, nil, nil
   self.Connected = false]], [[  self._began, self._changed, self._ended = nil, nil, nil
@@ -141,19 +165,22 @@ local function patchSource(source)
   table.clear(self.Changed)
   table.clear(self.Ended)
   table.clear(self.CaptureStack)
-  self.Connected = false]])
-
-  replace([[local ThemeBindings = {}]], [[local ThemeBindings = {}]])
+  self.Connected = false]], true)
 
   replace([[  ThemeBindings[#ThemeBindings + 1] = { instance, property, key }]], [[  local binding = setmetatable({ instance, property, key }, { __mode = "v" })
-  ThemeBindings[#ThemeBindings + 1] = binding]])
+  ThemeBindings[#ThemeBindings + 1] = binding]], true)
 
-  replace([[    if not b[1] or not b[1].Parent then
-      table.remove(ThemeBindings, i)]], [[    if not b[1] or not b[1].Parent then
-      table.remove(ThemeBindings, i)]])
+  local valid = string.find(source, "local X64UI =", 1, true)
+    and string.find(source, "local Signal =", 1, true)
+    and string.find(source, "local InputRouter", 1, true)
+    and string.find(source, "local History =", 1, true)
 
-  if patched == 0 then
-    return source
+  if not valid then
+    return nil, "downloaded source is not a recognized x64ui build"
+  end
+
+  if patched < required then
+    return nil, string.format("expected %d runtime patches, applied %d", required, patched)
   end
 
   return source
@@ -166,7 +193,12 @@ if not source then
   return
 end
 
-source = patchSource(source)
+local patched, patchErr = patchSource(source)
+if not patched then
+  warn("x64ui: patch validation failed: " .. tostring(patchErr))
+  return
+end
+source = patched
 
 local compiler = loadstring or load
 if type(compiler) ~= "function" then
