@@ -45,6 +45,7 @@ local function patchSource(source)
     end
 
     if string.find(source, new, 1, true) then
+      patched += 1
       return true
     end
 
@@ -217,23 +218,3 @@ if not ran then
   warn("x64ui: runtime error: " .. tostring(lib))
   return
 end
-
-local function publish(env)
-  if type(env) ~= "table" then return end
-  pcall(function()
-    env.X64UI = lib
-  end)
-end
-
-local okEnv, env = pcall(function()
-  return type(getgenv) == "function" and getgenv() or nil
-end)
-if okEnv then
-  publish(env)
-end
-
-if type(shared) == "table" then
-  publish(shared)
-end
-
-return lib
